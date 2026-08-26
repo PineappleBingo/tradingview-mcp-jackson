@@ -184,7 +184,7 @@ Claude reads `CLAUDE.md` automatically when working in this project. It contains
 
 ---
 
-## Tool Reference (81 MCP tools)
+## Tool Reference (82 MCP tools)
 
 ### Morning Brief (new in this fork)
 
@@ -213,8 +213,13 @@ Read `line.new()`, `label.new()`, `table.new()`, `box.new()` output from any vis
 | `data_get_pine_labels` | Text annotations + prices ("PDH 24550", "Bias Long") |
 | `data_get_pine_tables` | Data tables (session stats, analytics dashboards) |
 | `data_get_pine_boxes` | Price zones as {high, low} pairs |
+| `data_get_study_series` | Per-bar HISTORY of every plot (incl. data-window audit plots) via exportData — the bar-by-bar strategy-debugging tool |
 
 **Always use `study_filter`** to target a specific indicator: `study_filter: "MyIndicator"`.
+
+### Strategy Gate Debugging (new)
+
+Debug "why did my strategy (not) enter on bar X?" with data instead of screenshots: the `/strategy-gate-debug` skill (`.claude/skills/strategy-gate-debug/SKILL.md`) walks the loop — per-bar gate masks via `data_get_study_series`, timestamped telemetry rows via `data_get_pine_tables`, blocked-entry labels via `data_get_pine_labels`. Works in local Claude Code sessions directly, or from Claude Code on the web through the HTTP bridge (`scripts/http-bridge.js` + a tunnel). Setup and security notes: [docs/DEBUG_WORKFLOW_GUIDE.md](docs/DEBUG_WORKFLOW_GUIDE.md).
 
 ### Chart Control
 
