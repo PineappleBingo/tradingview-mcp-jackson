@@ -1,6 +1,6 @@
 # TradingView MCP — Claude Instructions
 
-68 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
+82 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
 
 ## Decision Tree — Which Tool When
 
@@ -18,6 +18,12 @@ Custom Pine indicators draw with `line.new()`, `label.new()`, `table.new()`, `bo
 4. `data_get_pine_boxes` → price zones / ranges as {high, low} pairs
 
 Use `study_filter` parameter to target a specific indicator by name substring (e.g., `study_filter: "Profiler"`).
+
+### "Why did my strategy (not) enter on bar X?"
+1. `data_get_study_series` with `study_filter` + `plot_filter: "Audit"` → per-bar HISTORY of every plot (incl. `display.data_window` audit bitmasks). `data_get_study_values` only shows the last bar — this is the bar-by-bar tool.
+2. `data_get_pine_tables` → the strategy's telemetry table (e.g., PF-TLM rows) verbatim
+3. `data_get_pine_labels` → blocked-entry labels (e.g., "X8·MAC" = pattern 8 blocked by the macro gate)
+4. Decode masks / short codes with the strategy repo's `docs/mcp-debug-workflow.md`, or invoke the `strategy-gate-debug` skill for the full loop
 
 ### "Give me price data"
 - `data_get_ohlcv` with `summary: true` → compact stats (high, low, range, change%, avg volume, last 5 bars)
@@ -106,6 +112,7 @@ These tools can return large payloads. Follow these rules to avoid context bloat
 | `data_get_pine_labels` | ~2-5 KB per study (capped at 50) |
 | `data_get_pine_tables` | ~1-4 KB per study (formatted rows) |
 | `data_get_pine_boxes` | ~1-2 KB per study (deduplicated zones) |
+| `data_get_study_series` | ~2-30 KB (depends on plot_filter × count — filter aggressively) |
 | `data_get_ohlcv` (summary) | ~500 bytes |
 | `data_get_ohlcv` (100 bars) | ~8 KB |
 | `capture_screenshot` | ~300 bytes (returns file path, not image data) |
@@ -117,7 +124,7 @@ These tools can return large payloads. Follow these rules to avoid context bloat
 - Pine indicators must be **visible** on chart for pine graphics tools to read their data
 - `chart_manage_indicator` requires **full indicator names**: "Relative Strength Index" not "RSI", "Moving Average Exponential" not "EMA", "Bollinger Bands" not "BB"
 - Screenshots save to `screenshots/` directory with timestamps
-- OHLCV capped at 500 bars, trades at 20 per request
+- OHLCV capped at 500 bars; trades default 20 per request (max 200); study series capped at 500 bars
 - Pine labels capped at 50 per study by default (pass `max_labels` to override)
 
 ## Architecture

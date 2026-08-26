@@ -4,9 +4,13 @@
 import { evaluate, evaluateAsync, KNOWN_PATHS } from '../connection.js';
 
 const MAX_OHLCV_BARS = 500;
-const MAX_TRADES = 20;
+const MAX_TRADES = 200;
 const CHART_API = KNOWN_PATHS.chartApi;
 const BARS_PATH = KNOWN_PATHS.mainSeriesBars;
+
+// JSON-escape a value for safe interpolation into injected page JS. Raw
+// '${...}' interpolation breaks on quotes/backslashes and enables injection.
+export const jsStr = (s) => JSON.stringify(String(s ?? ''));
 
 function buildGraphicsJS(collectionName, mapKey, filter) {
   return `
@@ -15,7 +19,7 @@ function buildGraphicsJS(collectionName, mapKey, filter) {
       var model = chart.model();
       var sources = model.model().dataSources();
       var results = [];
-      var filter = '${filter}';
+      var filter = ${jsStr(filter)}.toLowerCase();
       for (var si = 0; si < sources.length; si++) {
         var s = sources[si];
         if (!s.metaInfo) continue;
@@ -23,7 +27,7 @@ function buildGraphicsJS(collectionName, mapKey, filter) {
           var meta = s.metaInfo();
           var name = meta.description || meta.shortDescription || '';
           if (!name) continue;
-          if (filter && name.indexOf(filter) === -1) continue;
+          if (filter && name.toLowerCase().indexOf(filter) === -1) continue;
           var g = s._graphics;
           if (!g || !g._primitivesCollection) continue;
           var pc = g._primitivesCollection;
@@ -110,8 +114,8 @@ export async function getIndicator({ entity_id }) {
   const data = await evaluate(`
     (function() {
       var api = ${CHART_API};
-      var study = api.getStudyById('${entity_id}');
-      if (!study) return { error: 'Study not found: ${entity_id}' };
+      var study = api.getStudyById(${jsStr(entity_id)});
+      if (!study) return { error: 'Study not found: ' + ${jsStr(entity_id)} };
       var result = { name: null, inputs: null, visible: null };
       try { result.visible = study.isVisible(); } catch(e) {}
       try { result.inputs = study.getInputValues(); } catch(e) { result.inputs_error = e.message; }
@@ -141,7 +145,7 @@ export async function getStrategyResults() {
         var strat = null;
         for (var i = 0; i < sources.length; i++) {
           var s = sources[i];
-          if (s.metaInfo && s.metaInfo().is_price_study === false && (s.reportData || s.performance)) { strat = s; break; }
+          if (s.metaInfo && (s.ordersData || s.reportData || s.performance)) { strat = s; break; }
         }
         if (!strat) return {metrics: {}, source: 'internal_api', error: 'No strategy found on chart. Add a strategy indicator first.'};
         var metrics = {};
@@ -174,7 +178,7 @@ export async function getTrades({ max_trades } = {}) {
         var strat = null;
         for (var i = 0; i < sources.length; i++) {
           var s = sources[i];
-          if (s.metaInfo && s.metaInfo().is_price_study === false && (s.ordersData || s.reportData)) { strat = s; break; }
+          if (s.metaInfo && (s.ordersData || s.reportData || s.performance)) { strat = s; break; }
         }
         if (!strat) return {trades: [], source: 'internal_api', error: 'No strategy found on chart.'};
         var orders = null;
@@ -190,7 +194,14 @@ export async function getTrades({ max_trades } = {}) {
           if (typeof o === 'object' && o !== null) {
             var trade = {};
             var okeys = Object.keys(o);
-            for (var k = 0; k < okeys.length; k++) { var v = o[okeys[k]]; if (v !== null && v !== undefined && typeof v !== 'function' && typeof v !== 'object') trade[okeys[k]] = v; }
+            for (var k = 0; k < okeys.length; k++) {
+              var v = o[okeys[k]];
+              if (v !== null && v !== undefined && typeof v !== 'function' && typeof v !== 'object') trade[okeys[k]] = v;
+              else if (v !== null && v !== undefined && typeof v === 'object' && !Array.isArray(v)) {
+                var nkeys = Object.keys(v);
+                for (var n = 0; n < nkeys.length; n++) { var nv = v[nkeys[n]]; if (nv !== null && nv !== undefined && typeof nv !== 'function' && typeof nv !== 'object') trade[okeys[k] + '_' + nkeys[n]] = nv; }
+              }
+            }
             result.push(trade);
           }
         }
@@ -210,7 +221,7 @@ export async function getEquity() {
         var strat = null;
         for (var i = 0; i < sources.length; i++) {
           var s = sources[i];
-          if (s.metaInfo && s.metaInfo().is_price_study === false && (s.reportData || s.performance)) { strat = s; break; }
+          if (s.metaInfo && (s.ordersData || s.reportData || s.performance)) { strat = s; break; }
         }
         if (!strat) return {data: [], source: 'internal_api', error: 'No strategy found on chart.'};
         var data = [];
@@ -246,7 +257,7 @@ export async function getQuote({ symbol } = {}) {
   const data = await evaluate(`
     (function() {
       var api = ${CHART_API};
-      var sym = '${symbol || ''}';
+      var sym = ${jsStr(symbol)};
       if (!sym) { try { sym = api.symbol(); } catch(e) {} }
       if (!sym) { try { sym = api.symbolExt().symbol; } catch(e) {} }
       var ext = {};
@@ -355,6 +366,38 @@ export async function getStudyValues() {
     })()
   `);
   return { success: true, study_count: data?.length || 0, studies: data || [] };
+}
+
+export async function getStudySeries({ study_filter, plot_filter, count } = {}) {
+  const limit = Math.min(count || 100, MAX_OHLCV_BARS);
+  const raw = await evaluateAsync(`
+    new Promise(function(resolve, reject) {
+      ${CHART_API}.exportData({ includeTime: true, includeSeries: false, includeStudies: true })
+        .then(function(res) {
+          var studyFilter = ${jsStr(study_filter)}.toLowerCase();
+          var plotFilter = ${jsStr(plot_filter)}.toLowerCase();
+          var schema = res.schema || [];
+          var keep = [];
+          for (var i = 0; i < schema.length; i++) {
+            var col = schema[i];
+            if (col.type === 'time') { keep.push({ index: i, title: 'time' }); continue; }
+            var sourceTitle = String(col.sourceTitle || col.sourceId || '');
+            var plotTitle = String(col.plotTitle || '');
+            if (studyFilter && sourceTitle.toLowerCase().indexOf(studyFilter) === -1) continue;
+            if (plotFilter && plotTitle.toLowerCase().indexOf(plotFilter) === -1) continue;
+            keep.push({ index: i, title: sourceTitle + '::' + plotTitle });
+          }
+          var rows = (res.data || []).slice(-${limit}).map(function(row) {
+            return keep.map(function(k) { return row[k.index]; });
+          });
+          resolve({ columns: keep.map(function(k) { return k.title; }), rows: rows, total_columns: schema.length, total_rows: (res.data || []).length });
+        }).catch(function(e) { reject(new Error('exportData failed: ' + (e && e.message ? e.message : e))); });
+    })
+  `);
+  if (!raw || !raw.columns || raw.columns.length <= 1) {
+    throw new Error('No study columns matched. Check study_filter/plot_filter (case-insensitive substrings) and that the study is on the chart. Total columns available: ' + (raw ? raw.total_columns : 0));
+  }
+  return { success: true, bar_count: raw.rows.length, columns: raw.columns, rows: raw.rows, total_columns: raw.total_columns, total_rows: raw.total_rows };
 }
 
 export async function getPineLines({ study_filter, verbose } = {}) {
