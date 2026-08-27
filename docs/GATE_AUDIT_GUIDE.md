@@ -84,7 +84,13 @@ curl -s localhost:3001/call \
 ### 실행
 
 ```bash
-# 리포 루트에서
+# 리포 루트에서 — TradingView Desktop 자동 실행 + 브리지 기동 + 브라우저 자동 열기
+./run.sh
+```
+
+`run.sh`가 실행 환경을 감지해 알맞은 주소로 바인딩하고 브라우저까지 띄워준다. 직접 띄우려면:
+
+```bash
 MCP_BRIDGE_TOKEN=mysecret node scripts/http-bridge.js
 ```
 
@@ -93,6 +99,17 @@ MCP_BRIDGE_TOKEN=mysecret node scripts/http-bridge.js
 ```
 http://127.0.0.1:3001/viewer
 ```
+
+> **ChromeOS(Crostini) 주의** — ChromeOS 브라우저는 리눅스 컨테이너 **바깥**에서 돌기 때문에
+> `127.0.0.1`로는 절대 접속되지 않는다 (빈 화면만 뜸). 컨테이너의 loopback이 아니라 ChromeOS 쪽
+> loopback을 보기 때문이다. 이 경우 브리지를 모든 인터페이스에 바인딩하고 `penguin.linux.test`로 접속해야 한다:
+>
+> ```bash
+> MCP_BRIDGE_HOST=0.0.0.0 MCP_BRIDGE_TOKEN=mysecret node scripts/http-bridge.js
+> # → http://penguin.linux.test:3001/viewer
+> ```
+>
+> `./run.sh`는 이 과정을 자동으로 처리한다.
 
 쿼리 옵션: `?refresh=10` (초 단위, 최소 2초, 기본 10) · `?count=200` (최대 500) · `?study=PF%203G` · `?profile=pf3g-vp`
 
