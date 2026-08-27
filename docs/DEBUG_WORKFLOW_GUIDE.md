@@ -170,6 +170,12 @@ curl -s "$TV_BRIDGE_URL/call" -H "Authorization: Bearer $TV_BRIDGE_TOKEN" \
 
 ---
 
+## 4.5 Gate Audit 툴 & 뷰어 상세
+
+`strategy_gate_audit` 툴 응답 구조, 라이브 뷰어 화면 구성, 이번 세션에서 발견한 CDP/렌더러 노트는 [`GATE_AUDIT_GUIDE.md`](./GATE_AUDIT_GUIDE.md) 참조.
+
+---
+
 ## 5. 관련 문서
 
 - 전략 리포 `docs/mcp-debug-workflow.md` — 마스크 비트표, 차단자 코드, PF-TLM 필드 사전 (한국어)

@@ -220,7 +220,7 @@ Read `line.new()`, `label.new()`, `table.new()`, `box.new()` output from any vis
 
 ### Strategy Gate Debugging (new)
 
-Debug "why did my strategy (not) enter on bar X?" with data instead of screenshots: the `/strategy-gate-debug` skill (`.claude/skills/strategy-gate-debug/SKILL.md`) walks the loop — decoded per-bar verdicts via `strategy_gate_audit` (raw masks via `data_get_study_series`), timestamped telemetry rows via `data_get_pine_tables`, blocked-entry labels via `data_get_pine_labels`. Works in local Claude Code sessions directly, or from Claude Code on the web through the HTTP bridge (`scripts/http-bridge.js` + a tunnel). Setup and security notes: [docs/DEBUG_WORKFLOW_GUIDE.md](docs/DEBUG_WORKFLOW_GUIDE.md).
+Debug "why did my strategy (not) enter on bar X?" with data instead of screenshots: the `/strategy-gate-debug` skill (`.claude/skills/strategy-gate-debug/SKILL.md`) walks the loop — decoded per-bar verdicts via `strategy_gate_audit` (raw masks via `data_get_study_series`), timestamped telemetry rows via `data_get_pine_tables`, blocked-entry labels via `data_get_pine_labels`. Works in local Claude Code sessions directly, or from Claude Code on the web through the HTTP bridge (`scripts/http-bridge.js` + a tunnel). Setup and security notes: [docs/DEBUG_WORKFLOW_GUIDE.md](docs/DEBUG_WORKFLOW_GUIDE.md). `strategy_gate_audit` tool + viewer usage (Korean): [docs/GATE_AUDIT_GUIDE.md](docs/GATE_AUDIT_GUIDE.md).
 
 #### Live Gate Audit viewer
 
