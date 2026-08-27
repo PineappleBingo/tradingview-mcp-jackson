@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gate Audit · PF 3G VP</title>
+<style>
+:root{--bg:#1a1a19;--panel:#222221;--line:#33332f;--ink:#e8e6df;--ink2:#a9a79e;--muted:#5c5b55;--none:#33332f;
+--good:#0ca30c;--warn:#fab219;--crit:#d03b3b;--accent:#7aa2f7;--sel:#ffffff}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+header{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2}
+header h1{font-size:14px;margin:0 6px 0 0}header .k{color:var(--ink2)}header b{font-weight:600}
+#dot{width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block}#dot.on{background:var(--good);animation:p 1.6s infinite}#dot.err{background:var(--crit)}
+@keyframes p{50%{opacity:.35}}
+button{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:3px 8px;font:inherit;cursor:pointer}button:hover{border-color:var(--ink2)}
+#tokbar[hidden]{display:none}#tokbar{display:flex;gap:8px;align-items:center;margin:10px 14px 0;padding:8px 10px;border:1px solid var(--line);border-radius:4px;background:var(--panel)}#tokbar input{flex:1;max-width:360px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:4px 8px;font:inherit}
+#banner{margin:10px 14px 0;padding:8px 10px;border:1px solid var(--crit);border-radius:4px;color:var(--ink);background:#2a1c1c}
+section{padding:10px 14px}.legend{color:var(--ink2);font-size:12px;margin-bottom:6px;display:flex;gap:14px;flex-wrap:wrap}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;margin-right:4px}
+canvas{display:block;width:100%}#strip{height:34px}#heat{cursor:crosshair}
+#tip{position:fixed;pointer-events:none;background:#000;color:var(--ink);border:1px solid var(--line);padding:6px 8px;border-radius:4px;font-size:12px;display:none;z-index:5;white-space:pre}
+#hist{display:grid;grid-template-columns:max-content 1fr max-content;gap:4px 10px;align-items:center}
+#hist .bar{height:10px;background:var(--accent);border-radius:0 3px 3px 0;min-width:2px}#hist .r{cursor:pointer;display:contents}#hist .r.f .l{color:var(--accent)}
+table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:4px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--ink2);cursor:pointer;user-select:none;background:var(--bg)}tbody tr{cursor:pointer}tbody tr:hover{background:var(--panel)}tr.sel{outline:1px solid var(--sel)}
+.v-FIRED{color:var(--good)}.v-BLOCKED{color:var(--crit)}.v-LIVE{color:var(--warn)}
+#drawer{position:fixed;right:0;top:0;height:100%;width:min(520px,100%);background:var(--panel);border-left:1px solid var(--line);padding:14px;overflow:auto;z-index:6}
+#drawer pre{white-space:pre-wrap;font-size:12px;color:var(--ink2)}#drawer .tpl{color:var(--ink);background:var(--bg);padding:10px;border-radius:4px;border:1px solid var(--line)}
+.num{text-align:right}h2{font-size:12px;color:var(--ink2);margin:0 0 8px;text-transform:uppercase;letter-spacing:.05em}
+</style>
+</head>
+<body>
+<header>
+  <h1>Gate Audit</h1>
+  <span id="dot" title="polling state"></span>
+  <span><span class="k">study </span><b id="study">–</b></span>
+  <span><span class="k">chart </span><b id="chart">–</b></span>
+  <span><span class="k">last bar </span><b id="last">–</b></span>
+  <span><span class="k">bars </span><b id="bars">–</b></span>
+  <span><span class="v-FIRED">fired <b id="nFired">0</b></span> · <span class="v-BLOCKED">blocked <b id="nBlocked">0</b></span> · <span class="v-LIVE">live <b id="nLive">0</b></span></span>
+  <span class="k">refresh <b id="refreshLbl"></b>s</span>
+  <span class="k" id="status"></span>
+  <button id="nowBtn" title="refresh now">↻</button>
+  <button id="tokenBtn" title="forget the stored bridge token">token</button>
+</header>
+<form id="tokbar" hidden><span class="k">bridge token</span><input id="tok" type="password" autocomplete="off" placeholder="MCP_BRIDGE_TOKEN (leave empty if the bridge has none)"><button type="submit">connect</button><span class="k" id="tokmsg"></span></form>
+<div id="banner" hidden></div>
+
+<section>
+  <h2>Verdict per bar</h2>
+  <div class="legend"><span>upper half = LONG ▲ · lower half = SHORT ▼</span>
+    <span><i class="sw" style="background:var(--good)"></i>fired</span><span><i class="sw" style="background:var(--crit)"></i>blocked</span>
+    <span><i class="sw" style="background:var(--warn)"></i>live (unconfirmed)</span><span><i class="sw" style="background:var(--none)"></i>no pattern</span></div>
+  <canvas id="strip"></canvas>
+</section>
+<section>
+  <h2>Gate heatmap — filled cell = gate FAILED on that bar · bright = primary blocker</h2>
+  <canvas id="heat"></canvas>
+</section>
+<section>
+  <h2>Blockers (primary side) — click to filter the table</h2>
+  <div id="hist"></div>
+</section>
+<section>
+  <h2>Pattern bars</h2>
+  <div style="overflow-x:auto"><table id="tbl"><thead><tr></tr></thead><tbody></tbody></table></div>
+</section>
+<div id="tip"></div>
+<aside id="drawer" hidden></aside>
+
+<script>
+(() => {
+const $ = (s) => document.querySelector(s);
+const qs = new URLSearchParams(location.search);
+const REFRESH = Math.max(2, Number(qs.get('refresh')) || 10) * 1000;
+const COUNT = Math.min(500, Number(qs.get('count')) || 200);
+const STUDY = qs.get('study') || undefined;
+const PROFILE = qs.get('profile') || undefined;
+const C = getComputedStyle(document.documentElement);
+const col = (n) => C.getPropertyValue(n).trim();
+$('#refreshLbl').textContent = REFRESH / 1000;
+
+let token = null, data = null, lastSig = null, selected = -1, filterBlocker = null, sortKey = 't', sortDir = -1, inFlight = false, timer = null;
+try { token = localStorage.getItem('tvBridgeToken'); } catch {}
+function showTokenBar(msg) { stop(); token = null; $('#tokbar').hidden = false; $('#tokmsg').textContent = msg || ''; $('#tok').focus(); setStatus(msg ? 'token rejected' : 'enter token', msg ? 'err' : ''); }
+$('#tokbar').onsubmit = (e) => { e.preventDefault(); token = $('#tok').value.trim(); try { localStorage.setItem('tvBridgeToken', token); } catch {} $('#tokbar').hidden = true; start(); };
+
+async function call(tool, params) {
+  const res = await fetch('/call', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) }, body: JSON.stringify({ tool, params }) });
+  let body = null; try { body = await res.json(); } catch {}
+  if (res.status === 401) { const e = new Error('token rejected'); e.status = 401; throw e; }
+  if (!res.ok) { const e = new Error((body && body.error) || ('HTTP ' + res.status)); e.status = res.status; throw e; }
+  if (body && body.success === false) throw new Error(body.error || 'tool failed');
+  return body;
+}
+function setStatus(t, cls) { $('#status').textContent = t; $('#dot').className = cls || ''; }
+function banner(t) { const b = $('#banner'); b.hidden = !t; b.textContent = t || ''; }
+
+async function tick() {
+  if (inFlight || token === null) return;
+  inFlight = true;
+  try {
+    const d = await call('strategy_gate_audit', { count: COUNT, ...(STUDY && { study_filter: STUDY }), ...(PROFILE && { profile: PROFILE }) });
+    const sig = JSON.stringify([d.summary, d.chart, d.verdicts.length && d.verdicts[d.verdicts.length - 1]]);
+    data = d; banner(null); if (sig !== lastSig) { lastSig = sig; render(); } setStatus('updated ' + new Date().toLocaleTimeString(), 'on');
+  } catch (e) {
+    if (e.status === 401) { try { localStorage.removeItem('tvBridgeToken'); } catch {} showTokenBar('rejected by the bridge — try again'); return; }
+    setStatus(e.status === 503 ? 'TradingView unreachable' : 'error', 'err');
+    banner((e.status === 503 ? 'TradingView / CDP unreachable — ' : 'Request failed — ') + e.message + (data ? ' (showing last good data)' : ''));
+  } finally { inFlight = false; }
+}
+function start() { stop(); tick(); timer = setInterval(tick, REFRESH); }
+function stop() { if (timer) clearInterval(timer); timer = null; }
+document.addEventListener('visibilitychange', () => { if (document.hidden) { stop(); setStatus('paused (tab hidden)'); } else start(); });
+$('#nowBtn').onclick = () => tick();
+$('#tokenBtn').onclick = () => { try { localStorage.removeItem('tvBridgeToken'); } catch {} $('#tok').value = ''; showTokenBar(); };
+window.addEventListener('resize', () => data && render());
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+
+// ── layout shared by strip + heatmap ──────────────────────────────────────
+const LABEL_W = 64;
+function geom(canvas, n) {
+  const w = canvas.clientWidth || canvas.parentElement.clientWidth;
+  const cell = Math.max(3, Math.floor((w - LABEL_W) / Math.max(1, n)));
+  return { w, cell, x: (i) => LABEL_W + i * cell };
+}
+function prep(canvas, cssH) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || canvas.parentElement.clientWidth;
+  canvas.style.height = cssH + 'px'; canvas.width = Math.round(w * dpr); canvas.height = Math.round(cssH * dpr);
+  const ctx = canvas.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, cssH); return ctx;
+}
+const verdictOf = (v) => v.fired ? 'FIRED' : v.live ? 'LIVE' : v.side ? 'BLOCKED' : 'NONE';
+const colorOf = (v) => ({ FIRED: col('--good'), LIVE: col('--warn'), BLOCKED: col('--crit'), NONE: col('--none') })[verdictOf(v)];
+const gateRows = () => { const g = data.profile.gates; return [...g.filter((x) => x.side === 'L'), ...g.filter((x) => x.side === 'S')]; };
+
+function drawStrip() {
+  const cv = $('#strip'), vs = data.verdicts, H = 34, ctx = prep(cv, H), g = geom(cv, vs.length);
+  ctx.fillStyle = col('--ink2'); ctx.font = '11px ui-monospace,monospace'; ctx.textBaseline = 'middle';
+  ctx.fillText('L ▲', 4, 9); ctx.fillText('S ▼', 4, 26);
+  vs.forEach((v, i) => {
+    const x = g.x(i), w = Math.max(1, g.cell - 1);
+    ctx.fillStyle = col('--none'); ctx.fillRect(x, 15, w, 4);
+    if (!v.side) return;
+    const hasL = v.side !== 'S', hasS = v.side !== 'L';
+    const c = colorOf(v), cs = v.secondary ? colorOf({ ...v.secondary, live: false }) : c;
+    if (hasL) { ctx.fillStyle = v.side === 'LS' && v.secondary.side === 'L' ? cs : c; ctx.fillRect(x, 1, w, 14); }
+    if (hasS) { ctx.fillStyle = v.side === 'LS' && v.secondary.side === 'S' ? cs : c; ctx.fillRect(x, 19, w, 14); }
+    if (v.live) { ctx.strokeStyle = col('--warn'); ctx.setLineDash([2, 2]); ctx.strokeRect(x + .5, .5, w - 1, H - 1); ctx.setLineDash([]); }
+  });
+  if (selected >= 0) { ctx.strokeStyle = col('--sel'); ctx.lineWidth = 1.5; ctx.strokeRect(g.x(selected) - .5, .5, g.cell, H - 1); ctx.lineWidth = 1; }
+  cv.onclick = (e) => { const i = Math.floor((e.offsetX - LABEL_W) / g.cell); if (i >= 0 && i < vs.length) select(i); };
+  cv.onmousemove = (e) => { const i = Math.floor((e.offsetX - LABEL_W) / g.cell); hover(e, i >= 0 && i < vs.length ? vs[i] : null); };
+  cv.onmouseleave = () => hover(null);
+}
+function drawHeat() {
+  const cv = $('#heat'), vs = data.verdicts, rows = gateRows(), RH = 14, H = rows.length * RH + 2, ctx = prep(cv, H), g = geom(cv, vs.length);
+  ctx.font = '11px ui-monospace,monospace'; ctx.textBaseline = 'middle';
+  rows.forEach((r, ri) => {
+    const y = ri * RH + 1;
+    ctx.fillStyle = col('--ink2'); ctx.fillText(r.key, 4, y + RH / 2);
+    ctx.fillStyle = col('--line'); ctx.fillRect(LABEL_W, y + RH - 1, g.cell * vs.length, 1);
+    vs.forEach((v, i) => {
+      if (!v.failedGates.includes(r.key)) return;
+      const primary = v.blocker === r.key || (v.secondary && v.secondary.blocker === r.key);
+      ctx.globalAlpha = primary ? 1 : (v.side ? .55 : .22);
+      ctx.fillStyle = col('--crit'); ctx.fillRect(g.x(i), y, Math.max(1, g.cell - 1), RH - 2);
+      ctx.globalAlpha = 1;
+    });
+  });
+  if (selected >= 0) { ctx.strokeStyle = col('--sel'); ctx.strokeRect(g.x(selected) - .5, .5, g.cell, H - 1); }
+  const at = (e) => { const i = Math.floor((e.offsetX - LABEL_W) / g.cell), r = Math.floor(e.offsetY / RH); return { i, gate: rows[r] }; };
+  cv.onclick = (e) => { const { i } = at(e); if (i >= 0 && i < vs.length) select(i); };
+  cv.onmousemove = (e) => { const { i, gate } = at(e); hover(e, i >= 0 && i < vs.length ? vs[i] : null, gate); };
+  cv.onmouseleave = () => hover(null);
+}
+function hover(e, v, gate) {
+  const t = $('#tip'); if (!v) { t.style.display = 'none'; return; }
+  const lines = [v.iso.slice(0, 16) + 'Z  ' + verdictOf(v) + (v.side ? ' ' + v.side + (v.reason ? ' · ' + v.reasonName : '') : '')];
+  if (gate) lines.push(gate.key + ' (' + gate.name + '): ' + (v.failedGates.includes(gate.key) ? 'FAILED' : 'passed'));
+  if (v.blocker) lines.push('blocker ' + v.blocker + (v.secondary && v.secondary.blocker ? ' / ' + v.secondary.blocker : ''));
+  t.textContent = lines.join('\n'); t.style.display = 'block';
+  t.style.left = Math.min(e.clientX + 12, innerWidth - t.offsetWidth - 8) + 'px'; t.style.top = (e.clientY + 14) + 'px';
+}
+function drawHist() {
+  const h = $('#hist'), hist = data.summary.blockerHistogram, entries = Object.entries(hist).sort((a, b) => b[1] - a[1]), max = entries[0] ? entries[0][1] : 1;
+  h.innerHTML = entries.length ? '' : '<span class="k">no blocked bars in range</span>';
+  entries.forEach(([k, n]) => {
+    const r = document.createElement('div'); r.className = 'r' + (filterBlocker === k ? ' f' : '');
+    r.innerHTML = '<span class="l">' + k + '</span><div><div class="bar" style="width:' + Math.round(100 * n / max) + '%"></div></div><span class="num">' + n + '</span>';
+    r.onclick = () => { filterBlocker = filterBlocker === k ? null : k; drawHist(); drawTable(); };
+    h.appendChild(r);
+  });
+}
+const COLS = [['t', 'time (UTC)', (v) => v.iso.slice(5, 16).replace('T', ' ')], ['side', 'side'], ['reason', 'rsn', (v) => v.reason ? v.reason + ' ' + v.reasonName : ''], ['verdict', 'verdict', verdictOf],
+  ['blocker', 'blocker', (v) => (v.blocker || '') + (v.secondary && v.secondary.blocker ? ' / ' + v.secondary.blocker : '')], ['er', 'ER', (v) => fmt(v.metrics.er)], ['room', 'room%', (v) => fmt(v.metrics.roomPct)],
+  ['req', 'req%', (v) => fmt(v.metrics.reqPct)], ['regime', 'rgm', (v) => v.metrics.regime ? v.metrics.regime.raw : ''], ['macro', 'macro', (v) => v.metrics.macro ?? '']];
+const fmt = (n) => n == null ? '' : (Math.round(n * 100) / 100).toString();
+const sortVal = (v, k) => ({ t: v.t, side: v.side, reason: v.reason, verdict: verdictOf(v), blocker: v.blocker || '', er: v.metrics.er, room: v.metrics.roomPct, req: v.metrics.reqPct, regime: v.metrics.regime ? v.metrics.regime.raw : null, macro: v.metrics.macro })[k];
+function drawTable() {
+  const head = $('#tbl thead tr'); head.innerHTML = '';
+  COLS.forEach(([k, label]) => { const th = document.createElement('th'); th.textContent = label + (sortKey === k ? (sortDir > 0 ? ' ▲' : ' ▼') : ''); th.onclick = () => { sortDir = sortKey === k ? -sortDir : -1; sortKey = k; drawTable(); }; head.appendChild(th); });
+  const body = $('#tbl tbody'); body.innerHTML = '';
+  const rows = data.verdicts.map((v, i) => ({ v, i })).filter(({ v }) => v.side && (!filterBlocker || v.blocker === filterBlocker))
+    .sort((a, b) => { const x = sortVal(a.v, sortKey), y = sortVal(b.v, sortKey); return (x == null ? -1 : y == null ? 1 : x < y ? -1 : x > y ? 1 : 0) * sortDir; });
+  rows.forEach(({ v, i }) => {
+    const tr = document.createElement('tr'); if (i === selected) tr.className = 'sel';
+    COLS.forEach(([k, , f]) => { const td = document.createElement('td'); const val = f ? f(v) : v[k]; td.textContent = val ?? ''; if (k === 'verdict') td.className = 'v-' + val; if (['er', 'room', 'req', 'regime', 'macro'].includes(k)) td.classList.add('num'); tr.appendChild(td); });
+    tr.onclick = () => select(i); body.appendChild(tr);
+  });
+}
+function select(i) { selected = i; drawStrip(); drawHeat(); drawTable(); openDrawer(data.verdicts[i]); }
+function closeDrawer() { $('#drawer').hidden = true; selected = -1; if (data) { drawStrip(); drawHeat(); drawTable(); } }
+function openDrawer(v) {
+  const m = v.metrics, rg = m.regime;
+  const tpl = ['[' + v.iso + '] mask=' + v.mask + ' → ' + (v.fired ? 'FIRED ' + v.side : v.live ? 'LIVE (unconfirmed) ' + v.side : v.side ? 'BLOCKED ' + v.side + ' — failing: ' + v.sideFailedGates.join(', ') : 'no pattern'),
+    v.reason ? 'pattern: ' + v.reason + ' ' + v.reasonName : null,
+    'metrics: ER=' + fmt(m.er) + ' room=' + fmt(m.roomPct) + '% (req ' + fmt(m.reqPct) + '%) targetRoom=' + fmt(m.targetRoomAtr) + ' ATR regime=' + (rg ? rg.raw + ' (active ' + rg.active + ', evidence ' + rg.evidence + '/3, whipsaw ' + rg.whipsaw + ')' : '–') + ' macro=' + (m.macro ?? '–') + ' volGate=' + (m.volGate ?? '–'),
+    v.blocker ? 'cause: ' + v.blocker + (v.blockerCode ? ' (' + v.blockerCode + ')' : '') + (v.blocker === 'RoomL' || v.blocker === 'RoomS' ? ' — generic room ' + fmt(m.roomPct) + '% < required ' + fmt(m.reqPct) + '%' : '') : null,
+    v.governingInputs.length ? 'governing input: ' + v.governingInputs.join(' · ') : null,
+    v.secondary ? 'secondary ' + v.secondary.side + ': ' + (v.secondary.fired ? 'FIRED' : 'blocked by ' + v.secondary.blocker) + (v.secondary.reason ? ' (' + v.secondary.reasonName + ')' : '') : null,
+    'all failed bits: ' + (v.failedGates.join(', ') || 'none')].filter(Boolean).join('\n');
+  const d = $('#drawer'); d.hidden = false;
+  d.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h2 style="margin:0">Bar detail</h2><button id="closeBtn">close (Esc)</button></div><pre class="tpl"></pre><h2 style="margin-top:14px">Raw verdict</h2><pre id="raw"></pre>';
+  d.querySelector('.tpl').textContent = tpl; d.querySelector('#raw').textContent = JSON.stringify(v, null, 2);
+  d.querySelector('#closeBtn').onclick = closeDrawer;
+}
+function render() {
+  const s = data.summary;
+  $('#study').textContent = data.study || '–';
+  $('#chart').textContent = data.chart ? (data.chart.symbol || '?') + ' · ' + (data.chart.resolution || '?') : '–';
+  $('#last').textContent = s.lastIso ? s.lastIso.slice(0, 16) + 'Z' : '–';
+  $('#bars').textContent = s.bars + ' (' + s.patternBars + ' patterns)';
+  $('#nFired').textContent = s.fired; $('#nBlocked').textContent = s.blocked; $('#nLive').textContent = s.live;
+  if (selected >= data.verdicts.length) selected = -1;
+  drawStrip(); drawHeat(); drawHist(); drawTable();
+  if (s.missingColumns.length) banner('Profile columns missing on this study: ' + s.missingColumns.join(', ') + ' — metrics for them show blank.');
+}
+if (token === null) showTokenBar(); else start();
+})();
+</script>
+</body>
+</html>

@@ -68,13 +68,17 @@ export async function connect() {
   throw new Error(`CDP connection failed after ${MAX_RETRIES} attempts: ${lastError?.message}`);
 }
 
+// Pure target picker (exported for tests). Prefer the chart page, then any
+// tradingview.com page. Never fall back to the Desktop app's internal file://
+// pages — their paths contain "TradingView" and exist before the chart does.
+export function pickChartTarget(targets) {
+  const pages = (targets || []).filter(t => t.type === 'page' && /^https?:\/\/([^/]*\.)?tradingview\.com\//i.test(t.url || ''));
+  return pages.find(t => /\/chart\//i.test(t.url)) || pages[0] || null;
+}
+
 async function findChartTarget() {
   const resp = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/list`);
-  const targets = await resp.json();
-  // Prefer targets with tradingview.com/chart in the URL
-  return targets.find(t => t.type === 'page' && /tradingview\.com\/chart/i.test(t.url))
-    || targets.find(t => t.type === 'page' && /tradingview/i.test(t.url))
-    || null;
+  return pickChartTarget(await resp.json());
 }
 
 export async function getTargetInfo() {

@@ -4,6 +4,7 @@
  */
 export * as chart from './chart.js';
 export * as data from './data.js';
+export * as gateAudit from './gateAudit.js';
 export * as pine from './pine.js';
 export * as health from './health.js';
 export * as capture from './capture.js';

@@ -20,7 +20,8 @@ Custom Pine indicators draw with `line.new()`, `label.new()`, `table.new()`, `bo
 Use `study_filter` parameter to target a specific indicator by name substring (e.g., `study_filter: "Profiler"`).
 
 ### "Why did my strategy (not) enter on bar X?"
-1. `data_get_study_series` with `study_filter` + `plot_filter: "Audit"` → per-bar HISTORY of every plot (incl. `display.data_window` audit bitmasks). `data_get_study_values` only shows the last bar — this is the bar-by-bar tool.
+1. `strategy_gate_audit` (`count: 200`) → per-bar verdicts already decoded from the profile in `profiles/`: side, pattern reason, fired/blocked/live, failed gates, primary blocker + governing inputs, blocker histogram. Live dashboard: `GET /viewer` on the HTTP bridge.
+1b. Raw fallback: `data_get_study_series` with `study_filter` + `plot_filter: "Audit"` → per-bar HISTORY of every plot (incl. `display.data_window` audit bitmasks) read from the chart model (Desktop stubs `exportData`). `data_get_study_values` only shows the last bar.
 2. `data_get_pine_tables` → the strategy's telemetry table (e.g., PF-TLM rows) verbatim
 3. `data_get_pine_labels` → blocked-entry labels (e.g., "X8·MAC" = pattern 8 blocked by the macro gate)
 4. Decode masks / short codes with the strategy repo's `docs/mcp-debug-workflow.md`, or invoke the `strategy-gate-debug` skill for the full loop

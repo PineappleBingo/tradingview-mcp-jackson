@@ -8,9 +8,12 @@
  *   → CDP :9222 → TradingView Desktop
  *
  * Endpoints:
+ *   GET  /viewer  → live Gate Audit dashboard (static HTML, no token needed — it
+ *                   asks for the token itself and calls POST /call)
  *   GET  /health  → { ok, connected, server }        (503 when TV/CDP is down)
  *   GET  /tools   → { tools: [{ name, description }] }
- *   POST /call    → body { tool, params } → MCP tool result (JSON)
+ *   POST /call    → body { tool, params } → MCP tool result (JSON; 503 when the
+ *                   tool failed because TradingView/CDP is unreachable)
  *
  * Env:
  *   MCP_BRIDGE_PORT   default 3001
@@ -22,6 +25,7 @@
  */
 
 import http from 'node:http';
+import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -33,6 +37,8 @@ const BRIDGE_HOST = process.env.MCP_BRIDGE_HOST ?? '127.0.0.1';
 const BRIDGE_TOKEN = process.env.MCP_BRIDGE_TOKEN ?? '';
 const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH ?? path.join(__dirname, '..', 'src', 'server.js');
 const CDP_PROBE_URL = 'http://localhost:9222/json/version';
+const VIEWER_PATH = path.join(__dirname, 'viewer', 'gate-audit.html');
+const CDP_DOWN_RE = /CDP connection failed|not running with CDP|ECONNREFUSED|No TradingView chart target|9222/i;
 
 let mcpProcess = null;
 let initialized = false;
@@ -128,6 +134,27 @@ function authorized(req) {
 }
 
 const server = http.createServer(async (req, res) => {
+  const { pathname } = new URL(req.url, 'http://localhost');
+
+  // Static dashboard — public on purpose: it holds no secrets and prompts for the
+  // bearer token itself. Everything below this line stays token-gated.
+  if (req.method === 'GET' && pathname === '/viewer') {
+    try {
+      const html = readFileSync(VIEWER_PATH); // read per request so edits show on reload
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.writeHead(200);
+      res.end(html);
+    } catch (err) {
+      res.setHeader('Content-Type', 'application/json');
+      writeJson(res, 500, { error: `viewer not available: ${err.message}` });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/favicon.ico') { res.writeHead(204); res.end(); return; }
+
   res.setHeader('Content-Type', 'application/json');
 
   if (!authorized(req)) {
@@ -135,7 +162,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && req.url === '/health') {
+  if (req.method === 'GET' && pathname === '/health') {
     try {
       await ensureInitialized();
       let cdpOk = false;
@@ -154,7 +181,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && req.url === '/tools') {
+  if (req.method === 'GET' && pathname === '/tools') {
     try {
       await ensureInitialized();
       const result = await send('tools/list', {});
@@ -166,7 +193,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/call') {
+  if (req.method === 'POST' && pathname === '/call') {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', async () => {
@@ -185,7 +212,8 @@ const server = http.createServer(async (req, res) => {
         const data = await callTool(tool, params ?? {});
         if (data && typeof data === 'object' && data.success === false) {
           console.error(`[bridge] tool ${tool} returned error:`, data.error ?? '(unknown)');
-          writeJson(res, 500, { error: data.error ?? 'MCP tool returned failure' });
+          const status = CDP_DOWN_RE.test(String(data.error ?? '')) ? 503 : 500;
+          writeJson(res, status, { error: data.error ?? 'MCP tool returned failure' });
           return;
         }
         writeJson(res, 200, data);
@@ -197,13 +225,23 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  writeJson(res, 404, { error: 'Not found. Endpoints: GET /health, GET /tools, POST /call' });
+  writeJson(res, 404, { error: 'Not found. Endpoints: GET /viewer, GET /health, GET /tools, POST /call' });
 });
 
 server.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
-  console.log(`[bridge] TradingView MCP HTTP bridge listening on http://${BRIDGE_HOST}:${BRIDGE_PORT}`);
+  const port = server.address().port;
+  console.log(`[bridge] TradingView MCP HTTP bridge listening on http://${BRIDGE_HOST}:${port}`);
+  console.log(`[bridge] Gate Audit viewer: http://${BRIDGE_HOST}:${port}/viewer`);
   console.log(`[bridge] MCP server path: ${MCP_SERVER_PATH}`);
   if (!BRIDGE_TOKEN) {
     console.log('[bridge] WARNING: MCP_BRIDGE_TOKEN is not set. Do NOT expose this port through a tunnel without a token.');
   }
 });
+
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    if (mcpProcess) { try { mcpProcess.kill(); } catch {} }
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 500).unref();
+  });
+}

@@ -86,7 +86,7 @@ export function registerDataTools(server) {
 
   server.tool('data_get_study_series', 'Export per-bar HISTORICAL values for every plot of the studies on the chart (including display.data_window audit plots). THE tool for bar-by-bar gate/mask debugging — data_get_study_values only returns the last bar. Filter aggressively: a full matrix is large.', {
     study_filter: z.string().optional().describe('Case-insensitive substring of the study title (e.g., "PF 3G"). Omit for all studies.'),
-    plot_filter: z.string().optional().describe('Case-insensitive substring of the plot title (e.g., "Audit"). Combines with study_filter.'),
+    plot_filter: z.string().optional().describe('Case-insensitive substring of the plot title (e.g., "Audit"). Use "|" for alternatives ("Pass Mask|Efficiency"). Combines with study_filter.'),
     count: z.coerce.number().optional().describe('Bars from the end (default 100, max 500)'),
   }, async ({ study_filter, plot_filter, count }) => {
     try { return jsonResult(await core.getStudySeries({ study_filter, plot_filter, count })); }

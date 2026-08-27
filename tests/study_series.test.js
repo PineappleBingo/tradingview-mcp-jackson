@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { jsStr } from '../src/core/data.js';
+import { jsStr, studySeriesFromModel } from '../src/core/data.js';
 import { registerDataTools } from '../src/tools/data.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,8 +49,80 @@ test('data_get_study_series is registered with expected params', () => {
   assert.ok(tools.has('data_get_study_values'), 'existing tools still registered');
 });
 
-test('getStudySeries clamps count and exports study columns in-page', () => {
-  assert.ok(coreSource.includes('exportData({ includeTime: true, includeSeries: false, includeStudies: true })'));
+test('getStudySeries reads the chart model PlotList, not exportData (stubbed on Desktop)', () => {
+  assert.ok(!coreSource.includes('exportData({ includeTime: true, includeSeries: false, includeStudies: true })'), 'exportData is a hard stub in TradingView Desktop 3.1.0 and must not be used');
   assert.ok(coreSource.includes('Math.min(count || 100, MAX_OHLCV_BARS)'));
-  assert.ok(coreSource.includes("keep.push({ index: i, title: sourceTitle + '::' + plotTitle })"), 'columns filtered before crossing CDP');
+  assert.ok(coreSource.includes('studySeriesFromModel.toString()'), 'pure in-page function is injected by source');
+});
+
+// Fake of chart.model().model().dataSources() — indices mirror the real PlotList
+// (firstIndex is hugely negative, lastIndex is the last bar, valueAt() is null off-range).
+function fakeSource(description, plotTitles, bars, shortDescription = description) {
+  const plots = plotTitles.map((_, i) => ({ id: 'plot_' + i }));
+  const styles = {};
+  plotTitles.forEach((t, i) => { if (t) styles['plot_' + i] = { title: t }; });
+  const lastIndex = bars.length - 1;
+  return {
+    metaInfo: () => ({ description, shortDescription, plots, styles }),
+    data: () => ({
+      firstIndex: () => -1000100,
+      lastIndex: () => lastIndex,
+      valueAt: (i) => (i < 0 || i > lastIndex) ? null : bars[i],
+    }),
+  };
+}
+
+const PF = fakeSource('PineForge 3rd Gen Volume Profile [Coinbase]', ['Integrated Supertrend', null, 'Audit Final Entry Pass Mask', 'Audit Efficiency Ratio'], [
+  [1000, 95.1, 0, 65535, 0.5],
+  [1015, 95.2, 0, 65021, 0.7],
+  [1030, 95.3, 0, 62815, 0.79],
+], 'PF 3G VP');
+const VOL = fakeSource('Volume', ['Volume', 'Volume MA'], [[1000, 10, 9], [1015, 11, 9], [1030, 12, 9]]);
+const NO_META = { data: () => null };
+
+test('studySeriesFromModel names columns study::plot, falling back to the plot id when a style has no title', () => {
+  const r = studySeriesFromModel([NO_META, VOL, PF], 'pineforge', '', 100);
+  assert.deepEqual(r.columns, [
+    'time',
+    'PineForge 3rd Gen Volume Profile [Coinbase]::Integrated Supertrend',
+    'PineForge 3rd Gen Volume Profile [Coinbase]::plot_1',
+    'PineForge 3rd Gen Volume Profile [Coinbase]::Audit Final Entry Pass Mask',
+    'PineForge 3rd Gen Volume Profile [Coinbase]::Audit Efficiency Ratio',
+  ]);
+  assert.equal(r.total_columns, 5);
+});
+
+test('studySeriesFromModel filters plots by case-insensitive substring and keeps time first', () => {
+  const r = studySeriesFromModel([VOL, PF], 'PF', 'audit', 100);
+  assert.deepEqual(r.columns, [
+    'time',
+    'PineForge 3rd Gen Volume Profile [Coinbase]::Audit Final Entry Pass Mask',
+    'PineForge 3rd Gen Volume Profile [Coinbase]::Audit Efficiency Ratio',
+  ]);
+  assert.deepEqual(r.rows, [[1000, 65535, 0.5], [1015, 65021, 0.7], [1030, 62815, 0.79]]);
+});
+
+test('studySeriesFromModel returns only the last `limit` bars using lastIndex, not index 0', () => {
+  const r = studySeriesFromModel([PF], 'PF', 'mask', 2);
+  assert.deepEqual(r.rows, [[1015, 65021], [1030, 62815]]);
+  assert.equal(r.total_rows, 3);
+});
+
+test('studySeriesFromModel merges several studies on the shared time axis', () => {
+  const r = studySeriesFromModel([VOL, PF], '', 'volume ma|mask', 100);
+  assert.deepEqual(r.columns, ['time', 'Volume::Volume MA', 'PineForge 3rd Gen Volume Profile [Coinbase]::Audit Final Entry Pass Mask']);
+  assert.deepEqual(r.rows, [[1000, 9, 65535], [1015, 9, 65021], [1030, 9, 62815]]);
+});
+
+test('studySeriesFromModel skips null bars inside the window', () => {
+  const gappy = fakeSource('Gap', ['x'], [[1000, 1], null, [1030, 3]]);
+  const r = studySeriesFromModel([gappy], 'gap', '', 100);
+  assert.deepEqual(r.rows, [[1000, 1], [1030, 3]]);
+});
+
+test('studySeriesFromModel matches study_filter against shortDescription too, but prefixes columns with description', () => {
+  const r = studySeriesFromModel([VOL, PF], 'pf 3g', 'mask', 100);
+  assert.deepEqual(r.columns, ['time', 'PineForge 3rd Gen Volume Profile [Coinbase]::Audit Final Entry Pass Mask']);
+  const byDesc = studySeriesFromModel([VOL, PF], 'volume', 'volume ma|mask', 100);
+  assert.equal(byDesc.columns.length, 3, 'description match still works for both studies');
 });

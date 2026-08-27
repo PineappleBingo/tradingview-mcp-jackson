@@ -368,34 +368,79 @@ export async function getStudyValues() {
   return { success: true, study_count: data?.length || 0, studies: data || [] };
 }
 
+// Pure and self-contained: this function is injected into the page via
+// .toString(), so it must not reference anything from module scope.
+// Reads chart.model().model().dataSources() — the per-study PlotList that
+// backs the data window. TradingView Desktop 3.1.0 stubs exportData()
+// ("Data export is not supported"), so the model is the only history source.
+//   sources     – dataSources() array (studies expose metaInfo() + data())
+//   studyFilter – case-insensitive substring of the study description
+//   plotFilter  – case-insensitive substring(s) of the plot title; '|' separates alternatives
+//   limit       – bars from the end
+// PlotList indices are bar indices shared across studies; firstIndex() is a
+// huge negative sentinel and valueAt() is null off-range, so always walk back
+// from lastIndex() — never from 0.
+export function studySeriesFromModel(sources, studyFilter, plotFilter, limit) {
+  var sf = String(studyFilter || '').toLowerCase();
+  var pfs = String(plotFilter || '').toLowerCase().split('|').filter(function(x) { return x.length > 0; });
+  var keep = [];
+  var totalColumns = 1;
+  var lastIndex = null;
+  for (var si = 0; si < sources.length; si++) {
+    var s = sources[si];
+    if (!s || typeof s.metaInfo !== 'function') continue;
+    var mi = s.metaInfo() || {};
+    var name = mi.description || mi.shortDescription || '';
+    if (!name) continue;
+    // Match the filter against both titles ("PF 3G" only appears in shortDescription);
+    // columns are always prefixed with the long description.
+    var hay = (String(mi.description || '') + '\n' + String(mi.shortDescription || '')).toLowerCase();
+    if (sf && hay.indexOf(sf) === -1) continue;
+    var d = typeof s.data === 'function' ? s.data() : null;
+    if (!d) continue;
+    var plots = mi.plots || [];
+    totalColumns += plots.length;
+    var li = d.lastIndex();
+    if (lastIndex === null || li > lastIndex) lastIndex = li;
+    for (var pi = 0; pi < plots.length; pi++) {
+      var id = plots[pi].id;
+      var title = (mi.styles && mi.styles[id] && mi.styles[id].title) || id;
+      var lt = title.toLowerCase();
+      var ok = pfs.length === 0;
+      for (var fi = 0; fi < pfs.length && !ok; fi++) ok = lt.indexOf(pfs[fi]) !== -1;
+      if (!ok) continue;
+      keep.push({ title: name + '::' + title, data: d, index: pi + 1 });
+    }
+  }
+  var columns = ['time'];
+  for (var k = 0; k < keep.length; k++) columns.push(keep[k].title);
+  var rows = [];
+  var totalRows = 0;
+  if (lastIndex !== null) {
+    var firstIndex = 0;
+    for (var k2 = 0; k2 < keep.length; k2++) firstIndex = Math.max(firstIndex, keep[k2].data.firstIndex());
+    totalRows = lastIndex - firstIndex + 1;
+    for (var i = Math.max(firstIndex, lastIndex - limit + 1); i <= lastIndex; i++) {
+      var row = null;
+      for (var c = 0; c < keep.length; c++) {
+        var v = keep[c].data.valueAt(i);
+        if (!v || v[0] == null) { if (row) row.push(null); continue; }
+        if (!row) row = [v[0]];
+        row.push(v[keep[c].index]);
+      }
+      if (row) rows.push(row);
+    }
+  }
+  return { columns: columns, rows: rows, total_columns: totalColumns, total_rows: totalRows };
+}
+
 export async function getStudySeries({ study_filter, plot_filter, count } = {}) {
   const limit = Math.min(count || 100, MAX_OHLCV_BARS);
-  const raw = await evaluateAsync(`
-    new Promise(function(resolve, reject) {
-      ${CHART_API}.exportData({ includeTime: true, includeSeries: false, includeStudies: true })
-        .then(function(res) {
-          var studyFilter = ${jsStr(study_filter)}.toLowerCase();
-          var plotFilter = ${jsStr(plot_filter)}.toLowerCase();
-          var schema = res.schema || [];
-          var keep = [];
-          for (var i = 0; i < schema.length; i++) {
-            var col = schema[i];
-            if (col.type === 'time') { keep.push({ index: i, title: 'time' }); continue; }
-            var sourceTitle = String(col.sourceTitle || col.sourceId || '');
-            var plotTitle = String(col.plotTitle || '');
-            if (studyFilter && sourceTitle.toLowerCase().indexOf(studyFilter) === -1) continue;
-            if (plotFilter && plotTitle.toLowerCase().indexOf(plotFilter) === -1) continue;
-            keep.push({ index: i, title: sourceTitle + '::' + plotTitle });
-          }
-          var rows = (res.data || []).slice(-${limit}).map(function(row) {
-            return keep.map(function(k) { return row[k.index]; });
-          });
-          resolve({ columns: keep.map(function(k) { return k.title; }), rows: rows, total_columns: schema.length, total_rows: (res.data || []).length });
-        }).catch(function(e) { reject(new Error('exportData failed: ' + (e && e.message ? e.message : e))); });
-    })
-  `);
+  const raw = await evaluate(`(${studySeriesFromModel.toString()})(
+    ${CHART_API}._chartWidget.model().model().dataSources(),
+    ${jsStr(study_filter)}, ${jsStr(plot_filter)}, ${limit})`);
   if (!raw || !raw.columns || raw.columns.length <= 1) {
-    throw new Error('No study columns matched. Check study_filter/plot_filter (case-insensitive substrings) and that the study is on the chart. Total columns available: ' + (raw ? raw.total_columns : 0));
+    throw new Error('No study columns matched. Check study_filter/plot_filter (case-insensitive substrings; "|" separates plot alternatives) and that the study is on the chart. Total columns available: ' + (raw ? raw.total_columns : 0));
   }
   return { success: true, bar_count: raw.rows.length, columns: raw.columns, rows: raw.rows, total_columns: raw.total_columns, total_rows: raw.total_rows };
 }

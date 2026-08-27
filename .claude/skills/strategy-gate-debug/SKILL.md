@@ -37,6 +37,14 @@ Ask the user to enable **Diagnostics → "Debug Telemetry Table (MCP)"** in the 
 
 ## Step 3 — Pull the per-bar gate history
 
+**Preferred:** `strategy_gate_audit {count: 200}` — returns already-decoded verdicts per bar
+(`side`, `reason`/`reasonName`, `fired`/`live`, `failedGates`, `sideFailedGates`, `blocker`,
+`blockerCode`, `governingInputs`, `metrics{er, roomPct, reqPct, regime{active,evidence,whipsaw}, macro, volGate, targetRoomAtr}`)
+plus `summary.blockerHistogram`. Profile: `profiles/pf3g-vp.json` (override with `profile`).
+Over the bridge: `-d '{"tool":"strategy_gate_audit","params":{"count":200}}'`.
+For watching live without Claude, open the bridge's dashboard: `http://127.0.0.1:3001/viewer` (or the tunnel URL).
+
+**Raw fallback** (profile doesn't fit, or you need other plots):
 `data_get_study_series {study_filter: "PF 3G", plot_filter: "Audit", count: 200}`
 
 This returns per-bar values of every `Audit *` plot — the tool for history; `data_get_study_values` only shows the last bar. Key columns:
@@ -101,6 +109,6 @@ suggestion: <parameter change or logic follow-up, if warranted>
 - Labels have **no timestamps** in compact mode — use the tooltip `t=` field or PF-TLM rows to place them on bars.
 - `data_get_study_values` is last-bar only; always prefer `data_get_study_series` for history.
 - `src/core/data.js` and `src/core/stream.js` read pine primitives with different field shapes; verify with `ui_evaluate` before extending either.
-- On the first live run of `data_get_study_series`, if it errors, confirm the exportData schema field names with:
-  `ui_evaluate {code: "window.TradingViewApi._activeChartWidgetWV.value().exportData({includeTime:true,includeSeries:false,includeStudies:true}).then(r => ({schemaSample: r.schema.slice(0,5), rows: r.data.length}))"}`
+- `data_get_study_series` reads the chart model's PlotList directly (TradingView Desktop 3.1.0 stubs `exportData` with "Data export is not supported"). If it returns "No study columns matched", list plot titles with `data_get_study_values` — `plot_filter` accepts `|`-separated alternatives, e.g. `"Pass Mask|Efficiency Ratio|Execution Reason"`.
+- If telemetry is off and visuals are muted (`data_get_pine_labels` returns 0 studies), the Audit series is still available — it does not depend on the drawing layer.
 - Full reference (Korean): the strategy repo's `docs/mcp-debug-workflow.md`.

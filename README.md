@@ -213,13 +213,25 @@ Read `line.new()`, `label.new()`, `table.new()`, `box.new()` output from any vis
 | `data_get_pine_labels` | Text annotations + prices ("PDH 24550", "Bias Long") |
 | `data_get_pine_tables` | Data tables (session stats, analytics dashboards) |
 | `data_get_pine_boxes` | Price zones as {high, low} pairs |
-| `data_get_study_series` | Per-bar HISTORY of every plot (incl. data-window audit plots) via exportData — the bar-by-bar strategy-debugging tool |
+| `data_get_study_series` | Per-bar HISTORY of every plot (incl. data-window audit plots) read straight from the chart model's PlotList (Desktop stubs `exportData`) — the bar-by-bar strategy-debugging tool. `plot_filter` accepts `a\|b` alternatives |
+| `strategy_gate_audit` | Decoded per-bar entry verdicts for a strategy profile (`profiles/pf3g-vp.json` by default): side, pattern reason, fired/blocked/live, failed gates, primary blocker + governing inputs, blocker histogram. Use this before decoding masks by hand |
 
 **Always use `study_filter`** to target a specific indicator: `study_filter: "MyIndicator"`.
 
 ### Strategy Gate Debugging (new)
 
-Debug "why did my strategy (not) enter on bar X?" with data instead of screenshots: the `/strategy-gate-debug` skill (`.claude/skills/strategy-gate-debug/SKILL.md`) walks the loop — per-bar gate masks via `data_get_study_series`, timestamped telemetry rows via `data_get_pine_tables`, blocked-entry labels via `data_get_pine_labels`. Works in local Claude Code sessions directly, or from Claude Code on the web through the HTTP bridge (`scripts/http-bridge.js` + a tunnel). Setup and security notes: [docs/DEBUG_WORKFLOW_GUIDE.md](docs/DEBUG_WORKFLOW_GUIDE.md).
+Debug "why did my strategy (not) enter on bar X?" with data instead of screenshots: the `/strategy-gate-debug` skill (`.claude/skills/strategy-gate-debug/SKILL.md`) walks the loop — decoded per-bar verdicts via `strategy_gate_audit` (raw masks via `data_get_study_series`), timestamped telemetry rows via `data_get_pine_tables`, blocked-entry labels via `data_get_pine_labels`. Works in local Claude Code sessions directly, or from Claude Code on the web through the HTTP bridge (`scripts/http-bridge.js` + a tunnel). Setup and security notes: [docs/DEBUG_WORKFLOW_GUIDE.md](docs/DEBUG_WORKFLOW_GUIDE.md).
+
+#### Live Gate Audit viewer
+
+A single-file dashboard served by the HTTP bridge — no Claude in the loop, refreshes itself from the live chart:
+
+```bash
+MCP_BRIDGE_TOKEN=mysecret node scripts/http-bridge.js
+# then open  http://127.0.0.1:3001/viewer            (query: ?refresh=10&count=200&study=PF%203G&profile=pf3g-vp)
+```
+
+Layout: verdict bar strip (upper half = long, lower half = short; green fired / red blocked / amber live) → 16-row gate heatmap (filled cell = gate failed, bright = primary blocker) → blocker histogram (click to filter) → sortable pattern-bar table → click any bar for the full verdict (mask, failed gates, metrics, governing inputs). The page asks for the bridge token once (kept in `localStorage`), polls `POST /call {tool:"strategy_gate_audit"}`, pauses while the tab is hidden, and shows a banner when TradingView is unreachable (bridge answers 503). `GET /viewer` itself is unauthenticated static HTML; every data call still needs the token. If you expose the bridge through ngrok's free tier, the first browser visit shows ngrok's interstitial page — click through once.
 
 ### Chart Control
 
@@ -312,7 +324,7 @@ Full command list: `tv --help`
 Claude Code  ←→  MCP Server (stdio)  ←→  CDP (port 9222)  ←→  TradingView Desktop (Electron)
 ```
 
-- **78 original tools** + **3 morning brief tools** = 81 MCP tools total
+- **78 original tools** + **3 morning brief tools** + **1 gate-audit tool** = 82 MCP tools total
 - **Transport**: MCP over stdio + CLI (`tv` command)
 - **Connection**: Chrome DevTools Protocol on localhost:9222
 - **No external network calls** — everything runs locally
