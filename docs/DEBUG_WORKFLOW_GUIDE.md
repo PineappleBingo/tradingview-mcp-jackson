@@ -163,6 +163,7 @@ curl -s "$TV_BRIDGE_URL/call" -H "Authorization: Bearer $TV_BRIDGE_TOKEN" \
 | `data_get_study_series`가 "No study columns matched" | `study_filter` 오타(대소문자는 무시됨) 또는 전략이 차트에 없음. 플롯 제목은 `data_get_study_values`로 확인 (`plot_filter`는 `\|`로 여러 제목 지정 가능) |
 | `data_get_study_series`가 "Data export is not supported" | 구버전 MCP 서버. TradingView Desktop 3.1.0은 `exportData`를 스텁 처리하므로 최신 버전은 차트 모델의 PlotList를 직접 읽음 — `git pull` 후 재시작 |
 | 뷰어 상단에 "TradingView unreachable" 배너 | 브리지가 503을 반환 — TradingView Desktop이 꺼졌거나 CDP 모드가 아님. `/health`로 확인 후 재실행하면 뷰어가 자동 복구 |
+| 차트 페이지의 모든 `evaluate`가 멈춤 (`/health`는 정상, 다른 내부 페이지는 응답) | TradingView 렌더러가 멈춘 상태 (1회 관측됨, CDP 클라이언트 수와 무관 — 브리지 + Claude Code MCP 동시 사용은 정상). `tv_launch`(kill_existing) 또는 앱 재시작 후 차트 로드를 기다렸다가 재시도 |
 | 텔레메트리 테이블이 안 읽힘 | 전략 입력에서 `Debug Telemetry Table (MCP)`가 OFF |
 | 라벨에 시간이 없음 | 정상 — 라벨 툴팁의 `t=` 또는 PF-TLM 행으로 봉을 특정 |
 | 401 Unauthorized | `Authorization: Bearer <토큰>` 헤더 누락/불일치 |
