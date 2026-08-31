@@ -63,8 +63,8 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 |---|---|---|
 | **Audit** | ✅ 동작 | 봉별 판정 스트립 · 게이트 히트맵 · 차단자 히스토그램 · 패턴 봉 표 · 봉 상세 드로어 |
 | **Reports** | ✅ 동작 | 저장된 AI 분석 리포트 목록 / 상세 |
-| **Backtest** | ⏳ 예정 | Phase 3 |
-| **Optimize** | ⏳ 예정 | Phase 4 |
+| **Backtest** | ⏳ 예정 | [Phase 3 계획](./phase-plan/phase-3-backtest.md) |
+| **Optimize** | ⏳ 예정 | [Phase 4 계획](./phase-plan/phase-4-optimize.md) |
 
 주소창으로 바로 이동할 수 있습니다: `#audit` · `#reports` · `#reports/<리포트id>`
 
