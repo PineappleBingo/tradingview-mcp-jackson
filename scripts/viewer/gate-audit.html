@@ -33,6 +33,7 @@ th{color:var(--ink2);cursor:pointer;user-select:none;background:var(--bg)}tbody 
 #prompt{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line)}
 #prompt input{flex:1;min-width:240px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:5px 8px;font:inherit}
 #chips{display:flex;gap:6px;flex-wrap:wrap}
+#model{background:var(--panel);color:var(--ink2);border:1px solid var(--line);border-radius:4px;padding:4px 6px;font:inherit}#model[hidden]{display:none}
 .chip{display:inline-flex;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:12px;font-size:12px;color:var(--ink2);overflow:hidden}
 .chip button{background:none;border:none;color:inherit;font:inherit;padding:3px 10px;cursor:pointer}
 .chip .chip-add{border-left:1px solid var(--line);padding:3px 8px}
@@ -89,6 +90,10 @@ a{color:var(--accent)}
 <div id="prompt">
   <div id="attached" hidden></div>
   <input id="ask" placeholder="ask about the strategy — e.g. why was the 13:30 short blocked?">
+  <select id="model" title="sonnet reads data and writes prose · opus reasons and reviews code" hidden>
+    <option value="sonnet">sonnet</option>
+    <option value="opus">opus</option>
+  </select>
   <button id="askBtn">run</button>
   <span id="chips"></span>
 </div>
@@ -376,7 +381,7 @@ const PRESETS = [
     onShow: () => { const t = topBlocker(); if (t) { filterBlocker = t[0]; drawHist(); drawTable(); showTab('audit'); } } },
   { id: 'f-analyze', label: 'analyze entries', kind: 'fill',
     fill: () => 'Analyze the attached recent entries: which patterns and conditions are earning vs bleeding, and what should change?' },
-  { id: 'f-verify', label: 'verify entries', kind: 'fill',
+  { id: 'f-verify', label: 'verify entries', kind: 'fill', model: 'opus',
     fill: () => 'For each attached entry, verify against the Pine source (pine_get_source) that the gates which passed genuinely held — flag anything misapplied or buggy, with line cites.' },
   { id: 'f-bar', label: 'explain this bar', kind: 'fill', missing: 'select a bar first — click the strip, heatmap or table',
     fill: () => { const v = data && selected >= 0 && data.verdicts[selected]; return v ? 'Why did the strategy ' + (v.fired ? 'enter' : 'not enter') + (v.side ? ' ' + v.side : '') + ' at ' + v.iso + '?' : null; } },
@@ -384,9 +389,9 @@ const PRESETS = [
     fill: () => { const t = topBlocker(); return t ? 'Blocker ' + t[0] + ' stopped ' + t[1] + ' entries in this window (governing inputs: ' + govInputsFor(t[0]) + '). Suggest input changes to reduce blocks without weakening risk control.' : null; } },
   { id: 'f-report', label: 'draft session report', kind: 'fill',
     fill: () => 'Write a session report from the attached audit data: what fired, what was blocked and why, notable regime/macro conditions, anything unusual.' },
-  { id: 'a-why', label: 'why blocked + code review', kind: 'agent', attach: ['blocked'],
+  { id: 'a-why', label: 'why blocked + code review', kind: 'agent', attach: ['blocked'], model: 'opus',
     template: 'Explain in detail why each attached blocked entry was blocked. Then fetch the strategy Pine source yourself (pine_get_source) and code-review each gate that blocked: is the block correct per the code, or does it reveal a misapplied input or a bug? Cite line numbers. Start your answer with a 3-5 line summary.' },
-  { id: 'a-analyze', label: 'analyse last 10 entries', kind: 'agent', attach: ['entries'],
+  { id: 'a-analyze', label: 'analyse last 10 entries', kind: 'agent', attach: ['entries'], model: 'sonnet',
     template: 'Analyze the attached entries: per entry give pattern, gate metrics and outcome; then summarize which patterns and conditions are earning vs bleeding, and what should change. Start your answer with a 3-5 line summary.' },
 ];
 
@@ -431,7 +436,7 @@ PRESETS.forEach((p) => {
     add.onclick = () => attach(p, add); w.appendChild(add);
   } else if (p.kind === 'fill') {
     b.title = 'pre-type this prompt (edit before running)';
-    b.onclick = () => { const t = p.fill(); if (t == null) return say(p.label, p.missing); const i = $('#ask'); i.value = t; i.focus(); };
+    b.onclick = () => { const t = p.fill(); if (t == null) return say(p.label, p.missing); const i = $('#ask'); i.value = t; i.focus(); if (p.model) setModel(p.model); };
   } else { b.disabled = true; b.classList.add('agent-pill'); b.title = 'needs the agent bridge — enable MCP_BRIDGE_ALLOW_AGENT'; b.onclick = () => runAgentPreset(p); }
   $('#chips').appendChild(w);
 });
@@ -442,7 +447,7 @@ async function runAgentPreset(p) {
       if (!attached.has(id)) { const dp = PRESETS.find((x) => x.id === id); attached.set(id, { label: dp.label, text: await dp.text() }); }
     }
     renderAttached();
-    runPrompt(p.template);
+    runPrompt(p.template, p.model);
   } catch (e) { say(p.label, 'failed: ' + e.message); }
 }
 
@@ -454,9 +459,14 @@ const auth = () => token ? { Authorization: 'Bearer ' + token } : {};
 let agentOn = false, agentChecked = false, runLine = null, runTimer = null, statusTimer = null, runStart = 0;
 async function checkAgent() {
   if (agentChecked) return; agentChecked = true;
-  try { const j = await (await fetch('/health', { headers: auth() })).json().catch(() => ({})); agentOn = !!j.agent; } catch {}
+  let j = {};
+  try { j = await (await fetch('/health', { headers: auth() })).json().catch(() => ({})); agentOn = !!j.agent; } catch {}
   if (agentOn) {
     $('#askBtn').textContent = 'send to Claude';
+    const sel = $('#model'); sel.hidden = false;
+    let saved = null; try { saved = localStorage.getItem('agentModel'); } catch {}
+    sel.value = saved || j.defaultModel || 'sonnet';
+    sel.onchange = () => { try { localStorage.setItem('agentModel', sel.value); } catch {} };
     document.querySelectorAll('.agent-pill').forEach((b) => { b.disabled = false; b.title = 'runs claude -p on your machine'; });
     pollStatus(true); // reattach if a run is already in progress (e.g. after a reload)
   }
@@ -465,9 +475,11 @@ function setBusy(b) {
   $('#askBtn').disabled = b;
   document.querySelectorAll('.agent-pill').forEach((x) => { x.disabled = b || !agentOn; });
 }
-function beginRun(elapsedMs) {
+let runModel = '';
+function beginRun(elapsedMs, model) {
   runStart = Date.now() - (elapsedMs || 0);
-  runLine = say('claude', 'running… 0:00');
+  runModel = model || '';
+  runLine = say('claude' + (runModel ? ' · ' + runModel : ''), 'running… 0:00');
   setBusy(true);
   runTimer = setInterval(() => {
     const s = Math.floor((Date.now() - runStart) / 1000);
@@ -478,7 +490,7 @@ function beginRun(elapsedMs) {
 async function pollStatus(reattach) {
   let j;
   try { j = await (await fetch('/agent/status', { headers: auth() })).json(); } catch { return; }
-  if (reattach) { if (j.state === 'running' && !runLine) beginRun(j.elapsedMs); return; }
+  if (reattach) { if (j.state === 'running' && !runLine) beginRun(j.elapsedMs, j.model); return; }
   if (j.state === 'running' || !runLine) return;
   clearInterval(runTimer); clearInterval(statusTimer); setBusy(false);
   if (j.state === 'done' && j.reportId) {
@@ -492,8 +504,9 @@ async function pollStatus(reattach) {
   else runLine.textContent = 'run state lost (bridge restarted?)';
   runLine = null;
 }
-async function runPrompt(text) {
+async function runPrompt(text, model) {
   const t = text.trim();
+  const useModel = model || $('#model').value || 'sonnet';
   if (!t && !attached.size) return;
   say('you', t + (attached.size ? '\n[+ ' + [...attached.values()].map((v) => v.label).join(', ') + ']' : ''));
   let cmd = '/strategy-gate-debug ' + t;
@@ -502,12 +515,12 @@ async function runPrompt(text) {
     if (runLine) return say('claude', 'a run is already in progress — wait for it to finish');
     try {
       const res = await fetch('/agent', { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth() },
-        body: JSON.stringify({ prompt: cmd, title: t.slice(0, 60), context: [...attached.values()].map((v) => v.label) }) });
+        body: JSON.stringify({ prompt: cmd, title: t.slice(0, 60), context: [...attached.values()].map((v) => v.label), model: useModel }) });
       const j = await res.json().catch(() => ({}));
       if (res.status === 409) return say('claude', 'a run is already in progress — wait for it to finish');
       if (!res.ok) return say('claude', 'failed to start: ' + (j.error || ('HTTP ' + res.status)));
       attached.clear(); renderAttached(); $('#ask').value = '';
-      beginRun(0);
+      beginRun(0, j.model || useModel);
     } catch (e) { say('claude', 'failed to start: ' + e.message); }
     return;
   }
@@ -553,7 +566,7 @@ async function loadReports() {
       const c = document.createElement('div'); c.className = 'rcard';
       c.innerHTML = '<div class="rt"></div><div class="rm"></div><div class="rs"></div>';
       c.children[0].textContent = r.title;
-      c.children[1].textContent = r.createdAt.slice(0, 16).replace('T', ' ') + 'Z · ' + r.type + (r.context && r.context.length ? ' · [' + r.context.join(', ') + ']' : '');
+      c.children[1].textContent = r.createdAt.slice(0, 16).replace('T', ' ') + 'Z · ' + r.type + (r.model ? ' · ' + r.model : '') + (r.context && r.context.length ? ' · [' + r.context.join(', ') + ']' : '');
       c.children[2].textContent = r.summary || '';
       c.onclick = () => { location.hash = 'reports/' + r.id; };
       L.appendChild(c);
@@ -568,7 +581,7 @@ async function openReport(id) {
     D.innerHTML = '';
     const top = document.createElement('div'); top.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px';
     top.innerHTML = '<span class="k"></span><span><button class="rep-back">← all reports</button> <button class="rep-del">delete</button></span>';
-    top.querySelector('.k').textContent = r.createdAt.slice(0, 16).replace('T', ' ') + 'Z · ' + Math.round((r.elapsedMs || 0) / 1000) + 's'
+    top.querySelector('.k').textContent = r.createdAt.slice(0, 16).replace('T', ' ') + 'Z · ' + (r.model ? r.model + ' · ' : '') + Math.round((r.elapsedMs || 0) / 1000) + 's'
       + (r.context && r.context.length ? ' · context: ' + r.context.join(', ') : '');
     D.appendChild(top);
     const body = document.createElement('div'); body.className = 'md'; body.innerHTML = md(r.body_md || ''); D.appendChild(body);
@@ -593,6 +606,7 @@ const GLOSSARY = {
   blocker: 'The single gate held responsible for stopping an entry, by priority order.',
 };
 let edu = false; try { edu = localStorage.getItem('eduMode') === '1'; } catch {}
+function setModel(m) { const s = $('#model'); if (!s.hidden) { s.value = m; try { localStorage.setItem('agentModel', m); } catch {} } }
 function setEdu(on) {
   edu = on; document.body.classList.toggle('edu', on); $('#eduBtn').classList.toggle('on', on);
   try { localStorage.setItem('eduMode', on ? '1' : '0'); } catch {}

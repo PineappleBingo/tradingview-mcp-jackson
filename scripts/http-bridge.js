@@ -26,6 +26,8 @@
  *                     bridge (ngrok/cloudflared) — without it anyone with the
  *                     URL controls your TradingView session.
  *   MCP_SERVER_PATH   default <repo>/src/server.js
+ *   MCP_BRIDGE_AGENT_MODEL  default 'sonnet' (allowed: sonnet|opus|haiku). Per-run
+ *                     override via the POST /agent body; anything else falls back.
  */
 
 import http from 'node:http';
@@ -154,14 +156,20 @@ function extractSummary(out) {
   return out.trim().slice(0, 400);
 }
 
-function startAgent(prompt, title, context) {
+// Allowlist: never pass an unvalidated string through as a CLI flag value.
+// sonnet reads data and writes prose; opus is for reasoning and code review.
+const MODELS = ['sonnet', 'opus', 'haiku'];
+const DEFAULT_MODEL = MODELS.includes(process.env.MCP_BRIDGE_AGENT_MODEL) ? process.env.MCP_BRIDGE_AGENT_MODEL : 'sonnet';
+const pickModel = (m) => MODELS.includes(m) ? m : DEFAULT_MODEL;
+
+function startAgent(prompt, title, context, model) {
   const id = newId();
-  agentRun = { id, startedAt: Date.now(), state: 'running' };
+  agentRun = { id, startedAt: Date.now(), state: 'running', model };
   // Pinned argv, no shell. mcp__tradingview allows every tool of that server and
   // nothing else; never --dangerously-skip-permissions. MCP_BRIDGE_* is stripped
   // so a run cannot see this bridge's token or recurse into it.
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('MCP_BRIDGE_')));
-  const child = spawn('claude', ['-p', prompt, '--allowedTools', 'mcp__tradingview', 'Read', 'Grep', 'Glob'],
+  const child = spawn('claude', ['-p', prompt, '--model', model, '--allowedTools', 'mcp__tradingview', 'Read', 'Grep', 'Glob'],
     { cwd: path.join(__dirname, '..'), env, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '', err = '';
   child.stdout.on('data', (d) => { out += d; });
@@ -180,7 +188,7 @@ function startAgent(prompt, title, context) {
     const report = {
       id, createdAt: new Date(agentRun.startedAt).toISOString(), type: 'analysis',
       title: title || extractTitle(out, prompt), prompt, context: context || [],
-      summary: extractSummary(out), body_md: out.trim(), elapsedMs,
+      summary: extractSummary(out), body_md: out.trim(), elapsedMs, model,
     };
     try {
       mkdirSync(REPORTS_DIR, { recursive: true });
@@ -241,7 +249,7 @@ const server = http.createServer(async (req, res) => {
         writeJson(res, 503, { ok: false, connected: false, agent: ALLOW_AGENT, error: 'TradingView Desktop not running with --remote-debugging-port=9222' });
         return;
       }
-      writeJson(res, 200, { ok: true, connected: true, agent: ALLOW_AGENT, server: MCP_SERVER_PATH });
+      writeJson(res, 200, { ok: true, connected: true, agent: ALLOW_AGENT, defaultModel: DEFAULT_MODEL, models: MODELS, server: MCP_SERVER_PATH });
     } catch (err) {
       writeJson(res, 503, { ok: false, connected: false, agent: ALLOW_AGENT, error: err.message });
     }
@@ -252,7 +260,7 @@ const server = http.createServer(async (req, res) => {
     if (!ALLOW_AGENT) { writeJson(res, 404, { error: 'agent endpoint disabled — set MCP_BRIDGE_ALLOW_AGENT=1 (local use only, never behind a tunnel)' }); return; }
     if (req.method === 'GET' && pathname === '/agent/status') {
       writeJson(res, 200, agentRun
-        ? { busy: agentRun.state === 'running', id: agentRun.id, state: agentRun.state, elapsedMs: Date.now() - agentRun.startedAt, reportId: agentRun.reportId, error: agentRun.error }
+        ? { busy: agentRun.state === 'running', id: agentRun.id, state: agentRun.state, model: agentRun.model, elapsedMs: Date.now() - agentRun.startedAt, reportId: agentRun.reportId, error: agentRun.error }
         : { busy: false, state: 'idle' });
       return;
     }
@@ -260,11 +268,12 @@ const server = http.createServer(async (req, res) => {
       let body = '';
       req.on('data', (c) => { body += c; });
       req.on('end', () => {
-        let prompt, title, context;
-        try { ({ prompt, title, context } = JSON.parse(body)); } catch { writeJson(res, 400, { error: 'Invalid JSON body — expected { "prompt": "..." }' }); return; }
+        let prompt, title, context, model;
+        try { ({ prompt, title, context, model } = JSON.parse(body)); } catch { writeJson(res, 400, { error: 'Invalid JSON body — expected { "prompt": "..." }' }); return; }
         if (!prompt || typeof prompt !== 'string') { writeJson(res, 400, { error: 'Missing "prompt"' }); return; }
         if (agentRun && agentRun.state === 'running') { writeJson(res, 409, { error: 'a run is already in progress', id: agentRun.id }); return; }
-        writeJson(res, 200, { id: startAgent(prompt, title, context) });
+        const m = pickModel(model);
+        writeJson(res, 200, { id: startAgent(prompt, title, context, m), model: m });
       });
       return;
     }
@@ -277,7 +286,7 @@ const server = http.createServer(async (req, res) => {
         let files = [];
         try { files = readdirSync(REPORTS_DIR).filter((f) => f.endsWith('.json')); } catch {}
         const list = files.map((f) => {
-          try { const r = JSON.parse(readFileSync(path.join(REPORTS_DIR, f), 'utf8')); return { id: r.id, createdAt: r.createdAt, type: r.type, title: r.title, summary: r.summary, context: r.context }; }
+          try { const r = JSON.parse(readFileSync(path.join(REPORTS_DIR, f), 'utf8')); return { id: r.id, createdAt: r.createdAt, type: r.type, title: r.title, summary: r.summary, context: r.context, model: r.model }; }
           catch { return null; }
         }).filter(Boolean).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
         writeJson(res, 200, { count: list.length, reports: list });
@@ -344,7 +353,7 @@ server.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
   console.log(`[bridge] TradingView MCP HTTP bridge listening on http://${BRIDGE_HOST}:${port}`);
   console.log(`[bridge] Gate Audit viewer: http://${BRIDGE_HOST}:${port}/viewer`);
   console.log(`[bridge] MCP server path: ${MCP_SERVER_PATH}`);
-  console.log(`[bridge] agent endpoint: ${ALLOW_AGENT ? 'ENABLED (local runs of claude -p)' : 'disabled (MCP_BRIDGE_ALLOW_AGENT=1 to enable)'}`);
+  console.log(`[bridge] agent endpoint: ${ALLOW_AGENT ? `ENABLED (claude -p, default model: ${DEFAULT_MODEL})` : 'disabled (MCP_BRIDGE_ALLOW_AGENT=1 to enable)'}`);
   if (!BRIDGE_TOKEN) {
     console.log('[bridge] WARNING: MCP_BRIDGE_TOKEN is not set. Do NOT expose this port through a tunnel without a token.');
   }
