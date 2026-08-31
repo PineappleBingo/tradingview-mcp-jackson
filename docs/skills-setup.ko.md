@@ -1,11 +1,11 @@
 # Claude Code 스킬 · 플러그인 셋업 가이드
 
 > **최종 수정일: 2026-08-31**
-> 스킬을 추가·제거할 때마다 이 날짜와 [11장 변경 이력](#11-변경-이력)을 함께 갱신하세요.
+> 스킬을 추가·제거할 때마다 이 날짜와 [12장 변경 이력](#12-변경-이력)을 함께 갱신하세요.
 > 이 문서는 프로파일(`~/.claude`)이 초기화돼도 살아남도록 git 저장소 안에 둡니다.
 
 새 머신에서 이 문서 하나만 AI에게 주면 동일한 환경이 재현됩니다.
-바로 설치 → [8. 마스터 프롬프트](#8-마스터-프롬프트) | 한글이 깨져 보인다면 → [2. 한글 표시 문제](#2-한글-표시-문제-먼저-해결)
+바로 설치 → [9. 마스터 프롬프트](#9-마스터-프롬프트) | 한글이 깨져 보인다면 → [2. 한글 표시 문제](#2-한글-표시-문제-먼저-해결)
 
 ---
 
@@ -88,7 +88,10 @@ stat -c '%y' ~/.cache/fontconfig
 | Claude Code | `claude --version` | `curl -fsSL https://claude.ai/install.sh \| bash` |
 | PATH | `which claude` | `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc` |
 | Node.js 18+ | `node --version` | `sudo apt-get install -y nodejs npm` |
+| jq | `jq --version` | `sudo apt-get install -y jq` |
 | 한글 폰트 | `fc-list :lang=ko \| wc -l` | [2장](#2-한글-표시-문제-먼저-해결) |
+
+> ⚠️ **jq는 statusline이 요구합니다.** 없으면 statusline이 조용히 깨집니다 — 모델명이 `unknown`, 컨텍스트가 `--%`로만 표시되고, 에러는 stderr로 가서 화면에 안 보입니다. [8장](#8-사용자-레벨-설정-git-밖) 참조.
 
 > ⚠️ **Node.js는 필수입니다.** Claude Code 본체는 자체 런타임으로 돌지만 `npx skills`·claude-mem·MCP 서버가 Node를 요구합니다. 없으면 조용히 실패합니다.
 
@@ -325,7 +328,104 @@ docker compose up -d --build             # http://localhost:5173
 
 ---
 
-## 8. 마스터 프롬프트
+## 8. 사용자 레벨 설정 (git 밖)
+
+⚠️ **이 장의 파일들은 저장소가 아니라 홈 디렉터리에 있습니다. 프로파일이 초기화되면 전부 사라집니다.**
+플러그인은 [9장 마스터 프롬프트](#9-마스터-프롬프트)로 복구되지만, 아래 3개는 수동으로 되살려야 합니다.
+
+| 파일 | 내용 | 유실 시 증상 |
+|---|---|---|
+| `~/.claude/settings.json` | 전역 플러그인 목록, ecc `hook_profile`, statusline 등록 | 플러그인 전부 사라짐 |
+| `~/.claude/statusline-command.sh` | statusline 스크립트 | statusline 없음 |
+| `~/.config/Code/User/settings.json` | 한글 폰트 지정 | 한글 `□□□` |
+
+### 8-1. statusline 스크립트
+
+`[PONYTAIL] 모델명 | [####------] 43% | effort:high` 형태로 표시합니다.
+
+`~/.claude/statusline-command.sh` 생성 후 `chmod +x`:
+
+```bash
+#!/usr/bin/env bash
+input=$(cat)
+
+# ponytail mode badge, prepended if the plugin is installed (version-agnostic)
+pt=$(ls -d "$HOME"/.claude/plugins/cache/ponytail/ponytail/*/hooks/ponytail-statusline.sh 2>/dev/null | tail -1)
+badge=""
+[ -n "$pt" ] && badge=$(printf '%s' "$input" | bash "$pt" 2>/dev/null)
+
+model=$(echo "$input" | jq -r '.model.display_name // "unknown"')
+used=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
+effort=$(echo "$input" | jq -r '.effort.level // empty')
+
+# 10-cell bar, filled proportional to used_percentage
+bar=""
+if [ -n "$used" ]; then
+  filled=$(awk -v p="$used" 'BEGIN{printf "%d", (p/10)+0.5}')
+  [ "$filled" -gt 10 ] && filled=10
+  for i in $(seq 1 10); do
+    if [ "$i" -le "$filled" ]; then bar="${bar}#"; else bar="${bar}-"; fi
+  done
+  ctx=$(printf "[%s] %.0f%%" "$bar" "$used")
+else
+  ctx="[----------] --%"
+fi
+
+out=$(printf "\033[2m%s | %s" "$model" "$ctx")
+if [ -n "$effort" ]; then
+  out=$(printf "%s | effort:%s" "$out" "$effort")
+fi
+[ -n "$badge" ] && printf "%s " "$badge"
+printf "%s\033[0m" "$out"
+```
+
+`~/.claude/settings.json`에 등록:
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "bash \"$HOME/.claude/statusline-command.sh\""
+}
+```
+
+**동작 확인** (재시작 없이 바로 테스트 가능):
+
+```bash
+echo '{"model":{"display_name":"Opus 5"},"context_window":{"used_percentage":42.7},"effort":{"level":"high"}}' \
+  | bash ~/.claude/statusline-command.sh
+# → [PONYTAIL] Opus 5 | [####------] 43% | effort:high
+```
+
+> 📌 **비용(cost)은 일부러 뺐습니다.** ecc의 PostToolUse 훅이 이미 세션 비용을 출력하므로 중복입니다.
+> 📌 ponytail 배지 경로는 버전 와일드카드(`*`)를 씁니다. 버전을 고정하면 `claude plugin update ponytail` 후 조용히 깨집니다.
+> 📌 `jq`가 없으면 **에러 없이** 모델명이 `unknown`, 컨텍스트가 `--%`로만 나옵니다. 반드시 위 확인 명령으로 검증하세요.
+
+### 8-2. VS Code 폰트
+
+`~/.config/Code/User/settings.json` — [2-3장](#2-3-폰트-명시-지정-선택-확실하게)과 동일한 내용입니다.
+
+```json
+{
+    "terminal.integrated.fontFamily": "'DejaVu Sans Mono', 'Noto Sans Mono CJK KR', monospace",
+    "editor.fontFamily": "'DejaVu Sans Mono', 'Noto Sans Mono CJK KR', monospace"
+}
+```
+
+### 8-3. 백업 권장
+
+프로파일 초기화에 대비해 3개 파일을 저장소 밖 안전한 곳에 복사해 두세요:
+
+```bash
+mkdir -p ~/claude-config-backup
+cp ~/.claude/settings.json ~/.claude/statusline-command.sh ~/claude-config-backup/
+cp ~/.config/Code/User/settings.json ~/claude-config-backup/vscode-settings.json
+```
+
+> ⚠️ `~/.claude/settings.json`은 저장소에 커밋하지 마세요. 머신 고유 경로가 들어 있고, 향후 토큰·자격증명이 추가될 수 있습니다.
+
+---
+
+## 9. 마스터 프롬프트
 
 새 머신에서 AI에게 아래 블록을 그대로 붙여넣으세요.
 
@@ -377,6 +477,13 @@ docker compose up -d --build             # http://localhost:5173
   claude plugin details superpowers     # 구성요소·예상 토큰 비용
   python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.claude.json')))['enabledPlugins'])"
 
+[5.5단계] 사용자 레벨 설정 복구 (문서 8장)
+  플러그인 복구만으로는 statusline과 한글 폰트 설정이 돌아오지 않는다.
+  문서 8장의 statusline-command.sh를 생성하고 settings.json에 등록한 뒤,
+  아래로 반드시 렌더링을 확인할 것 (jq 없으면 조용히 깨진다):
+    echo '{"model":{"display_name":"Opus 5"},"context_window":{"used_percentage":42.7}}' \
+      | bash ~/.claude/statusline-command.sh
+
 [6단계] 세션 재시작
   플러그인·스킬은 재시작 후 적용된다. Claude Code를 재시작하고
   스킬 목록에 superpowers·ponytail·vercel·strix 스킬이 뜨는지 확인해줘.
@@ -394,7 +501,7 @@ docker compose up -d --build             # http://localhost:5173
 
 ---
 
-## 9. 검증 체크리스트
+## 10. 검증 체크리스트
 
 - [ ] `fc-list :lang=ko | wc -l` > 0 **그리고** VS Code 재시작 완료 → 이 문서가 정상 표시
 - [ ] `node --version` → v18 이상
@@ -403,6 +510,7 @@ docker compose up -d --build             # http://localhost:5173
 - [ ] `ls ~/.claude/skills/` → 18개 (vercel 9 + strix 9)
 - [ ] `~/.claude.json`의 `enabledPlugins`가 `null`이 아님
 - [ ] 세션 재시작 후 스킬 목록에 실제 노출
+- [ ] statusline 렌더링 확인 ([8-1장](#8-1-statusline-스크립트)) — `unknown`/`--%`로 나오면 `jq` 미설치
 - [ ] `claude plugin details <이름>`으로 토큰 비용 확인 → 전역 스킬 과다 여부 판단
 
 ### 2026-08-31 기준 설치 확인된 버전
@@ -420,7 +528,7 @@ docker compose up -d --build             # http://localhost:5173
 
 ---
 
-## 10. 유지보수
+## 11. 유지보수
 
 ```bash
 claude plugin marketplace update       # 전체 마켓플레이스 갱신
@@ -434,9 +542,10 @@ claude plugin details <이름>           # 구성요소·토큰 비용
 
 ---
 
-## 11. 변경 이력
+## 12. 변경 이력
 
 | 날짜 | 변경 내용 |
 |---|---|
+| 2026-08-31 | 8장 **사용자 레벨 설정 (git 밖)** 신설 — statusline 스크립트 전문, VS Code 폰트 설정, 백업 절차. 이 3개는 홈 디렉터리에 있어 프로파일 초기화 시 유실되며 마스터 프롬프트로 복구되지 않는다. `jq`를 사전 준비물에 추가 (없으면 statusline이 에러 없이 깨짐). 기존 8~11장 → 9~12장으로 번호 이동. |
 | 2026-08-31 | 한글 표시 문제 2장으로 분리 — 폰트 설치만으로는 부족하고 **Electron 앱 재시작이 필수**임을 명시 (VS Code가 시작 시점에 폰트 목록을 캐싱). 터미널 폰트 명시 지정 방법 추가. 마스터 프롬프트에 동일 주의사항 반영. |
 | 2026-08-31 | 최초 작성. 전역 8종(플러그인 6 + 스킬셋 2) + ecc 프로젝트 스코프 설치. agentation 제외(claude-in-chrome + playwright 대체). graphify·strix CLI·screenshot-to-code는 별도 도구로 문서화. 한글 폰트·Node.js 사전 준비물 추가. |
