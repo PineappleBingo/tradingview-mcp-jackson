@@ -499,6 +499,8 @@ async function pollStatus(reattach) {
       runLine.textContent = r.summary + '\n\n';
       const a = document.createElement('a'); a.href = '/viewer#reports/' + r.id; a.target = '_blank'; a.textContent = 'open report ↗';
       runLine.appendChild(a);
+      // a run can finish while the Reports tab is open — refresh it in place
+      if (viewState.tab === 'reports' && !location.hash.includes('/')) loadReports();
     } catch (e) { runLine.textContent = 'done, but failed to load the report: ' + e.message; }
   } else if (j.state === 'error') runLine.textContent = 'failed: ' + (j.error || 'unknown error');
   else runLine.textContent = 'run state lost (bridge restarted?)';

@@ -6,7 +6,8 @@
 
 터미널에서 `/strategy-gate-debug ...`를 직접 타이핑하지 않고, **브라우저에서 클릭만으로** 전략을 분석하고 그 결과를 리포트로 저장하는 것이 목표입니다.
 
-> 📸 이 문서에 스크린샷은 없습니다. 이 컨테이너에는 브라우저가 설치돼 있지 않아 화면 캡처를 뜰 수 없어서, 대신 **ASCII 레이아웃 그림 + 텍스트 설명**으로 대체했습니다. 스크린샷이 필요하면 직접 캡처해 이 문서에 넣으면 됩니다.
+> 📸 스크린샷은 실제 동작 화면입니다 (COINBASE:SOLUSD · 5분봉, 컨테이너에 설치한 Google Chrome 152에서 캡처).
+> UI를 바꾼 뒤에는 `docs/images/`의 이미지도 다시 캡처해 주세요.
 
 ---
 
@@ -53,6 +54,9 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
+![Audit 탭 전체 화면](./images/01-audit-tab.png)
+*Audit 탭 — 헤더(스터디·심볼·fired/blocked 카운트), 탭, 스마트 프롬프트(모델 드롭다운 + send to Claude), pill 3종, 그리고 판정 스트립·게이트 히트맵·차단자 히스토그램·패턴 봉 표.*
+
 ### 탭 4개
 
 | 탭 | 상태 | 내용 |
@@ -84,6 +88,9 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 
 - **이름 클릭** → 콘솔에 결과가 뜹니다. **한 번 더 누르면 사라집니다** (토글). 열려 있는 동안 pill 테두리가 파랗게 표시됩니다.
 - **⊕ 클릭** → **그 순간의 데이터를 캡처**해서 입력창 위에 `[last 10 entries ×]` 칩으로 붙입니다. `×`로 제거합니다.
+
+![pill 토글과 컨텍스트 칩](./images/02-pill-and-chip.png)
+*`last 10 blocked`의 이름을 눌러 패널을 연 상태(테두리가 파랗게 강조됨) + `last 10 entries`의 ⊕를 눌러 입력창 위에 `[last 10 entries ×]` 칩이 붙은 상태.*
 
 > 💡 ⊕는 "가서 가져와라"가 아니라 **데이터 자체를 첨부**합니다. 즉 **화면에서 본 그 데이터**가 그대로 AI에게 전달됩니다.
 
@@ -172,6 +179,12 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 
 - **목록**: 카드마다 날짜 · 제목 · 사용 모델 · 첨부했던 컨텍스트 · 요약
 - **상세**: 카드를 클릭 (또는 `open report ↗`) → 마크다운으로 렌더링된 본문, 소요 시간, `prompt that produced this` (접힘), `delete`
+![리포트 목록](./images/04-reports-list.png)
+*카드에 날짜 · 종류 · **사용 모델** · 첨부했던 컨텍스트 · 요약이 표시됩니다.*
+
+![리포트 상세](./images/05-report-detail.png)
+*상세 화면 — 마크다운(제목·표·굵게·인라인 코드·목록)이 렌더링되고, 상단에 모델과 소요 시간, 하단에 `prompt that produced this`(접힘)와 `delete`가 있습니다.*
+
 - 저장 위치: 저장소의 `reports/*.json` (**git에는 커밋되지 않음** — `.gitignore` 처리)
 
 ---
@@ -182,6 +195,9 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 
 - 용어에 **점선 밑줄**이 생기고, 마우스를 올리면 초보자용 설명이 뜹니다
 - 각 탭에 초보자용 해설 문단이 추가로 표시됩니다
+![Edu 모드](./images/03-edu-mode.png)
+*Edu 모드 ON — 용어에 점선 밑줄(`backtest`, `profit factor`, `max drawdown`, `win rate`)이 생기고, 각 탭에 노란 테두리의 초보자용 해설이 나타납니다.*
+
 - 현재 등록된 용어: profit factor · max drawdown · win rate · backtest · sweep · overfitting · blocker · report
 
 ---
@@ -222,4 +238,5 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 
 | 날짜 | 변경 내용 |
 |---|---|
+| 2026-08-31 | 실제 동작 스크린샷 5장 추가 (`docs/images/`). 컨테이너에 Google Chrome 152 설치 후 Playwright로 캡처. |
 | 2026-08-31 | 최초 작성. Phase 1(탭·스마트 프롬프트·Edu 모드), Phase 1.5(pill 토글·컨텍스트 칩·자동입력 pill), Phase 2(send to Claude·리포트 저장/열람·모델 선택) 사용법 수록. |

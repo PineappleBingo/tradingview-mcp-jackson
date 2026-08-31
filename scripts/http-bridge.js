@@ -134,6 +134,9 @@ async function callTool(tool, params) {
 }
 
 function writeJson(res, status, body) {
+  // no-store: /reports and /agent/status change on every add, delete and run.
+  // Without this the browser serves a cached list and the UI shows stale reports.
+  res.setHeader('Cache-Control', 'no-store');
   res.writeHead(status);
   res.end(JSON.stringify(body));
 }
