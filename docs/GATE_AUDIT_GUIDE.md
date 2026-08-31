@@ -102,14 +102,21 @@ http://127.0.0.1:3001/viewer
 
 > **ChromeOS(Crostini) 주의** — ChromeOS 브라우저는 리눅스 컨테이너 **바깥**에서 돌기 때문에
 > `127.0.0.1`로는 절대 접속되지 않는다 (빈 화면만 뜸). 컨테이너의 loopback이 아니라 ChromeOS 쪽
-> loopback을 보기 때문이다. 이 경우 브리지를 모든 인터페이스에 바인딩하고 `penguin.linux.test`로 접속해야 한다:
+> loopback을 보기 때문이다. 이 경우 브리지를 모든 인터페이스에 바인딩하고 **컨테이너의 실제 IP**로 접속해야 한다:
 >
 > ```bash
 > MCP_BRIDGE_HOST=0.0.0.0 MCP_BRIDGE_TOKEN=mysecret node scripts/http-bridge.js
-> # → http://penguin.linux.test:3001/viewer
+> ip -4 -o addr show scope global | awk 'NR==1{split($4,a,"/"); print a[1]}'
+> # → http://<그 IP>:3001/viewer   (예: http://100.115.92.26:3001/viewer)
 > ```
 >
-> `./run.sh`는 이 과정을 자동으로 처리한다.
+> ⚠️ **`penguin.linux.test`를 쓰지 말 것.** 이 호스트명은 ChromeOS 쪽에서 해석하는데,
+> 컨테이너를 새로 만든 환경에서는 해석되지 않아 `ERR_NAME_NOT_RESOLVED`가 나고 브라우저가
+> 연결 시도조차 하지 않는다. 브리지가 정상 동작해도 화면은 열리지 않는다.
+> IP는 항상 동작하지만 **컨테이너를 재생성하면 바뀐다** (예: `100.115.92.205` → `100.115.92.26`).
+> 그래서 하드코딩하지 말고 위 명령으로 그때그때 확인한다.
+>
+> `./run.sh`는 이 IP를 자동으로 계산해서 출력한다.
 
 쿼리 옵션: `?refresh=10` (초 단위, 최소 2초, 기본 10) · `?count=200` (최대 500) · `?study=PF%203G` · `?profile=pf3g-vp`
 

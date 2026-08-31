@@ -15,14 +15,19 @@ fi
 # ── Where to bind, and which URL the browser should use ───────────────────────
 # On ChromeOS (Crostini) the browser runs OUTSIDE this container, so its
 # 127.0.0.1 is not ours — binding to loopback makes the viewer unreachable.
-# Bind all interfaces instead and hand out the penguin.linux.test hostname.
+# Bind all interfaces instead and hand out the container's routable IP.
+# NOT penguin.linux.test: that name is resolved by ChromeOS, and on a rebuilt
+# container it may not resolve at all (ERR_NAME_NOT_RESOLVED), so the browser
+# never even opens a connection. The IP always works, but changes whenever the
+# container is rebuilt — so derive it at runtime rather than hardcoding either.
 GARCON=/opt/google/cros-containers/bin/garcon
 BRIDGE_PORT="${MCP_BRIDGE_PORT:-3001}"
 BRIDGE_TOKEN="${MCP_BRIDGE_TOKEN:-mysecret}"
 
 if [ -x "$GARCON" ]; then
   BRIDGE_HOST="${MCP_BRIDGE_HOST:-0.0.0.0}"
-  VIEWER_HOST="penguin.linux.test"
+  VIEWER_HOST=$(ip -4 -o addr show scope global 2>/dev/null | awk 'NR==1{split($4,a,"/"); print a[1]}')
+  VIEWER_HOST="${VIEWER_HOST:-penguin.linux.test}"
 else
   BRIDGE_HOST="${MCP_BRIDGE_HOST:-127.0.0.1}"
   VIEWER_HOST="$BRIDGE_HOST"
@@ -47,6 +52,9 @@ done
 echo
 echo "Server is running: $VIEWER_URL"
 echo "Bridge token:      $BRIDGE_TOKEN   (paste this into the viewer's token box)"
+if [ -x "$GARCON" ]; then
+  echo "If that IP changed:  http://penguin.linux.test:${BRIDGE_PORT}/viewer  (only if ChromeOS resolves it)"
+fi
 echo
 
 if [ -x "$GARCON" ]; then
