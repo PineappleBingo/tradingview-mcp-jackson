@@ -33,8 +33,16 @@ th{color:var(--ink2);cursor:pointer;user-select:none;background:var(--bg)}tbody 
 #prompt{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line)}
 #prompt input{flex:1;min-width:240px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:5px 8px;font:inherit}
 #chips{display:flex;gap:6px;flex-wrap:wrap}
-.chip{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:3px 10px;font-size:12px;color:var(--ink2);cursor:pointer}
-.chip:hover:not([disabled]){border-color:var(--accent);color:var(--ink)}.chip[disabled]{opacity:.45;cursor:not-allowed}
+.chip{display:inline-flex;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:12px;font-size:12px;color:var(--ink2);overflow:hidden}
+.chip button{background:none;border:none;color:inherit;font:inherit;padding:3px 10px;cursor:pointer}
+.chip .chip-add{border-left:1px solid var(--line);padding:3px 8px}
+.chip:hover{border-color:var(--accent)}.chip button:hover:not([disabled]){color:var(--ink)}
+.chip.on{border-color:var(--accent);color:var(--ink)}
+.chip button[disabled]{opacity:.45;cursor:not-allowed}
+.chip.fill .chip-btn::before{content:'✎ ';color:var(--muted)}
+#attached{display:flex;gap:6px;flex-wrap:wrap;width:100%}#attached[hidden]{display:none}
+.att{display:inline-flex;align-items:center;gap:2px;background:var(--bg);border:1px solid var(--accent);border-radius:12px;padding:2px 2px 2px 10px;font-size:12px;color:var(--ink)}
+.att .chip-x{background:none;border:none;color:var(--ink2);padding:0 6px;font:inherit;cursor:pointer}.att .chip-x:hover{color:var(--crit)}
 #console{margin:10px 14px 0;border:1px solid var(--line);border-radius:4px;background:var(--panel);max-height:340px;overflow:auto;padding:8px 10px}
 .msg{margin-bottom:10px}.msg .who{color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
 .msg pre{margin:3px 0 0;white-space:pre-wrap;font-size:12px;color:var(--ink2)}
@@ -70,6 +78,7 @@ body.edu .edu-note{display:block}#eduBtn.on{border-color:var(--warn);color:var(-
 </nav>
 
 <div id="prompt">
+  <div id="attached" hidden></div>
   <input id="ask" placeholder="ask about the strategy — e.g. why was the 13:30 short blocked?">
   <button id="askBtn">run</button>
   <span id="chips"></span>
@@ -322,49 +331,108 @@ const rowsOf = (r) => Array.isArray(r) ? r : (['trades', 'rows', 'data', 'result
 const table = (rows) => rows.map((r) => typeof r === 'object' && r ? Object.entries(r).map(([k, v]) => k + '=' + (v && typeof v === 'object' ? JSON.stringify(v) : v)).join('  ') : String(r)).join('\n');
 
 // ── presets ───────────────────────────────────────────────────────────────
-// Add an entry here to add a command. kind:'js' runs locally over POST /call.
-async function presetLastEntries() {
-  const out = say('last 10 entries', 'loading…');
+// One entry = one pill. kind:'js' → label toggles a result panel, ⊕ attaches the
+// data to the prompt. kind:'fill' → label pre-types a prompt. kind:'agent' → Phase 2.
+// Every data pill exposes text(): Promise<string> — one renderer for panel AND chip.
+async function lastEntriesText() {
   const rows = rowsOf(await call('data_get_trades', { max_trades: 10 }));
-  out.textContent = rows.length ? table(rows) : 'the Strategy Tester reported no trades — is a strategy (not an indicator) loaded?';
+  return rows.length ? table(rows) : 'the Strategy Tester reported no trades — is a strategy (not an indicator) loaded?';
 }
-function presetLastBlocked() {
-  if (!data) return say('last 10 blocked', 'no audit data yet — wait for the first poll');
+async function lastBlockedText() {
+  if (!data) return 'no audit data yet — wait for the first poll';
   const b = data.verdicts.filter((v) => v.side && !v.fired && !v.live).slice(-10).reverse();
-  say('last 10 blocked', b.length ? b.map((v) =>
+  return b.length ? b.map((v) =>
     v.iso.slice(5, 16).replace('T', ' ') + '  ' + v.side + '  ' + (v.reasonName || '') + '  → blocked by ' + (v.blocker || '?') +
-    (v.governingInputs && v.governingInputs.length ? '\n    governing input: ' + v.governingInputs.join(' · ') : '')).join('\n') : 'no blocked bars in range');
+    (v.governingInputs && v.governingInputs.length ? '\n    governing input: ' + v.governingInputs.join(' · ') : '')).join('\n') : 'no blocked bars in range';
 }
-function presetWorstBlocker() {
-  if (!data) return say('worst blocker', 'no audit data yet — wait for the first poll');
-  const top = Object.entries(data.summary.blockerHistogram).sort((a, b) => b[1] - a[1])[0];
-  if (!top) return say('worst blocker', 'no blocked bars in range');
-  filterBlocker = top[0]; drawHist(); drawTable(); showTab('audit');
-  say('worst blocker', top[0] + ' blocked ' + top[1] + ' bars — Pattern bars table filtered to it');
+const topBlocker = () => data && Object.entries(data.summary.blockerHistogram).sort((a, b) => b[1] - a[1])[0];
+async function blockerHistText() {
+  if (!data) return 'no audit data yet — wait for the first poll';
+  const e = Object.entries(data.summary.blockerHistogram).sort((a, b) => b[1] - a[1]);
+  return e.length ? e.map(([k, n]) => k.padEnd(8) + n).join('\n') : 'no blocked bars in range';
 }
+const govInputsFor = (k) => { const v = data && data.verdicts.find((x) => x.blocker === k && x.governingInputs.length); return v ? v.governingInputs.join(' · ') : 'see profile'; };
+
 const PRESETS = [
-  { label: 'last 10 entries', kind: 'js', run: presetLastEntries },
-  { label: 'last 10 blocked', kind: 'js', run: presetLastBlocked },
-  { label: 'worst blocker', kind: 'js', run: presetWorstBlocker, tab: 'audit' },
-  { label: 'why blocked + code review', kind: 'agent', tab: 'reports' },
-  { label: 'analyse last 10 entries', kind: 'agent', tab: 'reports' },
+  { id: 'entries', label: 'last 10 entries', kind: 'js', text: lastEntriesText },
+  { id: 'blocked', label: 'last 10 blocked', kind: 'js', text: lastBlockedText },
+  { id: 'worst', label: 'worst blocker', kind: 'js', text: blockerHistText,
+    onShow: () => { const t = topBlocker(); if (t) { filterBlocker = t[0]; drawHist(); drawTable(); showTab('audit'); } } },
+  { id: 'f-analyze', label: 'analyze entries', kind: 'fill',
+    fill: () => 'Analyze the attached recent entries: which patterns and conditions are earning vs bleeding, and what should change?' },
+  { id: 'f-verify', label: 'verify entries', kind: 'fill',
+    fill: () => 'For each attached entry, verify against the Pine source (pine_get_source) that the gates which passed genuinely held — flag anything misapplied or buggy, with line cites.' },
+  { id: 'f-bar', label: 'explain this bar', kind: 'fill', missing: 'select a bar first — click the strip, heatmap or table',
+    fill: () => { const v = data && selected >= 0 && data.verdicts[selected]; return v ? 'Why did the strategy ' + (v.fired ? 'enter' : 'not enter') + (v.side ? ' ' + v.side : '') + ' at ' + v.iso + '?' : null; } },
+  { id: 'f-tune', label: 'tune worst blocker', kind: 'fill', missing: 'no blocked bars in the loaded window',
+    fill: () => { const t = topBlocker(); return t ? 'Blocker ' + t[0] + ' stopped ' + t[1] + ' entries in this window (governing inputs: ' + govInputsFor(t[0]) + '). Suggest input changes to reduce blocks without weakening risk control.' : null; } },
+  { id: 'f-report', label: 'draft session report', kind: 'fill',
+    fill: () => 'Write a session report from the attached audit data: what fired, what was blocked and why, notable regime/macro conditions, anything unusual.' },
+  { id: 'a-why', label: 'why blocked + code review', kind: 'agent' },
+  { id: 'a-analyze', label: 'analyse last 10 entries', kind: 'agent' },
 ];
+
+// toggle: click on → run text() into a keyed panel; click again → panel gone.
+const panels = new Map();
+async function togglePanel(p, pill) {
+  const c = $('#console');
+  if (panels.has(p.id)) { panels.get(p.id).remove(); panels.delete(p.id); pill.classList.remove('on'); if (!c.children.length) c.hidden = true; return; }
+  const pre = say(p.label, 'loading…');
+  panels.set(p.id, pre.closest('.msg')); pill.classList.add('on');
+  try { pre.textContent = await p.text(); if (p.onShow) p.onShow(); }
+  catch (e) { pre.textContent = 'failed: ' + e.message; }
+}
+
+// attach: data captured NOW rides along with the typed prompt; × removes it.
+const attached = new Map();
+function renderAttached() {
+  const a = $('#attached'); a.innerHTML = '';
+  attached.forEach((v, id) => {
+    const c = document.createElement('span'); c.className = 'att';
+    c.innerHTML = '<span></span><button class="chip-x" title="remove from prompt">×</button>';
+    c.firstChild.textContent = v.label;
+    c.lastChild.onclick = () => { attached.delete(id); renderAttached(); };
+    a.appendChild(c);
+  });
+  a.hidden = !attached.size;
+}
+async function attach(p, btn) {
+  if (attached.has(p.id)) return;
+  btn.disabled = true;
+  try { attached.set(p.id, { label: p.label, text: await p.text() }); renderAttached(); }
+  catch (e) { say(p.label, 'attach failed: ' + e.message); }
+  finally { btn.disabled = false; }
+}
+
 PRESETS.forEach((p) => {
-  const b = document.createElement('button'); b.className = 'chip'; b.textContent = p.label;
-  if (p.kind === 'agent') { b.disabled = true; b.title = 'needs the agent bridge (POST /agent) — Phase 2'; }
-  else b.onclick = () => Promise.resolve(p.run()).catch((e) => say(p.label, 'failed: ' + e.message));
-  $('#chips').appendChild(b);
+  const w = document.createElement('span'); w.className = 'chip' + (p.kind === 'fill' ? ' fill' : '');
+  const b = document.createElement('button'); b.className = 'chip-btn'; b.textContent = p.label; w.appendChild(b);
+  if (p.kind === 'js') {
+    b.title = 'show / hide'; b.onclick = () => togglePanel(p, w);
+    const add = document.createElement('button'); add.className = 'chip-add'; add.textContent = '⊕'; add.title = 'attach this data to the prompt';
+    add.onclick = () => attach(p, add); w.appendChild(add);
+  } else if (p.kind === 'fill') {
+    b.title = 'pre-type this prompt (edit before running)';
+    b.onclick = () => { const t = p.fill(); if (t == null) return say(p.label, p.missing); const i = $('#ask'); i.value = t; i.focus(); };
+  } else { b.disabled = true; b.title = 'needs the agent bridge (POST /agent) — Phase 2'; }
+  $('#chips').appendChild(w);
 });
 
-// Free text has no model behind it yet — hand the prompt to Claude Code instead of pretending.
+// Free text + attached context. No model behind it yet — compose the full prompt
+// (user text + captured data blocks) and hand it to Claude Code. When Phase 2's
+// POST /agent lands, this exact string posts there instead.
 async function runPrompt(text) {
-  const t = text.trim(); if (!t) return;
-  say('you', t);
-  const cmd = '/strategy-gate-debug ' + t;
+  const t = text.trim();
+  if (!t && !attached.size) return;
+  say('you', t + (attached.size ? '\n[+ ' + [...attached.values()].map((v) => v.label).join(', ') + ']' : ''));
+  let cmd = '/strategy-gate-debug ' + t;
+  attached.forEach((v) => { cmd += '\n\n### context: ' + v.label + '\n' + v.text; });
   let copied = false;
   try { await navigator.clipboard.writeText(cmd); copied = true; } catch {}
-  say('no agent bridge yet', (copied ? 'Copied to your clipboard. Paste it into Claude Code:\n\n' : 'Run this in Claude Code:\n\n') + cmd);
-  $('#ask').value = '';
+  say('no agent bridge yet', copied
+    ? 'Copied to your clipboard (' + cmd.length + ' chars' + (attached.size ? ', ' + attached.size + ' context block' + (attached.size > 1 ? 's' : '') : '') + '). Paste into Claude Code.'
+    : 'Run this in Claude Code:\n\n' + cmd);
+  attached.clear(); renderAttached(); $('#ask').value = '';
 }
 $('#askBtn').onclick = () => runPrompt($('#ask').value);
 $('#ask').addEventListener('keydown', (e) => { if (e.key === 'Enter') runPrompt($('#ask').value); });
