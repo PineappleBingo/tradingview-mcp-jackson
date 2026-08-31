@@ -50,6 +50,15 @@ th{color:var(--ink2);cursor:pointer;user-select:none;background:var(--bg)}tbody 
 .term{border-bottom:1px dotted transparent}body.edu .term{border-bottom-color:var(--warn);cursor:help}
 .edu-note{display:none;color:var(--ink2);font-size:12px;border-left:2px solid var(--warn);padding:4px 0 4px 8px;margin:8px 0 0}
 body.edu .edu-note{display:block}#eduBtn.on{border-color:var(--warn);color:var(--warn)}
+a{color:var(--accent)}
+.rcard{border:1px solid var(--line);border-radius:4px;background:var(--panel);padding:10px 12px;margin-bottom:8px;cursor:pointer}
+.rcard:hover{border-color:var(--accent)}
+.rcard .rt{color:var(--ink)}.rcard .rm{color:var(--muted);font-size:11px;margin:2px 0}.rcard .rs{color:var(--ink2);font-size:12px}
+.md{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:12px 14px}
+.md h1,.md h2,.md h3,.md h4{color:var(--ink);text-transform:none;letter-spacing:0;font-size:14px;margin:12px 0 6px}
+.md p{margin:6px 0;color:var(--ink2)}.md li{color:var(--ink2)}.md ul{margin:6px 0;padding-left:20px}
+.md code{background:var(--bg);padding:1px 4px;border-radius:3px}
+.md pre{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:8px 10px;overflow-x:auto;color:var(--ink2)}
 </style>
 </head>
 <body>
@@ -110,8 +119,9 @@ body.edu .edu-note{display:block}#eduBtn.on{border-color:var(--warn);color:var(-
 <div id="tab-reports" hidden>
 <section>
   <h2>Reports</h2>
-  <div class="placeholder">Saved analyses land here in <b>Phase 2</b>, once the agent bridge (<code>POST /agent</code>) exists. Nothing is stored yet — the deterministic presets above print into the console instead.</div>
   <div class="edu-note">A <span class="term" data-term="report">report</span> is a frozen snapshot of one analysis — the verdicts, the numbers and the written explanation — so you can compare today's behaviour against last week's instead of relying on memory.</div>
+  <div id="repList"><div class="placeholder">No reports yet. Send a prompt to Claude (or run an agent pill) — finished analyses are saved here.</div></div>
+  <div id="repDetail" hidden></div>
 </section>
 </div>
 
@@ -175,7 +185,7 @@ async function tick() {
     banner((e.status === 503 ? 'TradingView / CDP unreachable — ' : 'Request failed — ') + e.message + (data ? ' (showing last good data)' : ''));
   } finally { inFlight = false; }
 }
-function start() { stop(); tick(); timer = setInterval(tick, REFRESH); }
+function start() { stop(); checkAgent(); tick(); timer = setInterval(tick, REFRESH); }
 function stop() { if (timer) clearInterval(timer); timer = null; }
 document.addEventListener('visibilitychange', () => { if (document.hidden) { stop(); setStatus('paused (tab hidden)'); } else start(); });
 $('#nowBtn').onclick = () => tick();
@@ -310,11 +320,17 @@ function showTab(name, ctx) {
   if (!TABS.includes(name)) name = 'audit';
   Object.assign(viewState, ctx || {}, { tab: name });
   TABS.forEach((t) => { $('#tab-' + t).hidden = t !== name; $('#tb-' + t).classList.toggle('on', t === name); });
-  if (location.hash.slice(1) !== name) location.hash = name;
+  if (location.hash.slice(1).split('/')[0] !== name) location.hash = name; // keep #reports/<id> intact
   if (name === 'audit' && data) render(); // canvases measure 0 while hidden — redraw on return
 }
 TABS.forEach((t) => { $('#tb-' + t).onclick = () => showTab(t); });
-addEventListener('hashchange', () => showTab(location.hash.slice(1) || 'audit'));
+// hash routes: #audit · #reports · #reports/<id> (report detail, used by "open report ↗")
+function route() {
+  const [name, id] = location.hash.slice(1).split('/');
+  showTab(name || 'audit');
+  if ((name || 'audit') === 'reports') { if (id) openReport(id); else loadReports(); }
+}
+addEventListener('hashchange', route);
 
 // ── console ───────────────────────────────────────────────────────────────
 function say(who, text) {
@@ -368,8 +384,10 @@ const PRESETS = [
     fill: () => { const t = topBlocker(); return t ? 'Blocker ' + t[0] + ' stopped ' + t[1] + ' entries in this window (governing inputs: ' + govInputsFor(t[0]) + '). Suggest input changes to reduce blocks without weakening risk control.' : null; } },
   { id: 'f-report', label: 'draft session report', kind: 'fill',
     fill: () => 'Write a session report from the attached audit data: what fired, what was blocked and why, notable regime/macro conditions, anything unusual.' },
-  { id: 'a-why', label: 'why blocked + code review', kind: 'agent' },
-  { id: 'a-analyze', label: 'analyse last 10 entries', kind: 'agent' },
+  { id: 'a-why', label: 'why blocked + code review', kind: 'agent', attach: ['blocked'],
+    template: 'Explain in detail why each attached blocked entry was blocked. Then fetch the strategy Pine source yourself (pine_get_source) and code-review each gate that blocked: is the block correct per the code, or does it reveal a misapplied input or a bug? Cite line numbers. Start your answer with a 3-5 line summary.' },
+  { id: 'a-analyze', label: 'analyse last 10 entries', kind: 'agent', attach: ['entries'],
+    template: 'Analyze the attached entries: per entry give pattern, gate metrics and outcome; then summarize which patterns and conditions are earning vs bleeding, and what should change. Start your answer with a 3-5 line summary.' },
 ];
 
 // toggle: click on → run text() into a keyed panel; click again → panel gone.
@@ -414,28 +432,154 @@ PRESETS.forEach((p) => {
   } else if (p.kind === 'fill') {
     b.title = 'pre-type this prompt (edit before running)';
     b.onclick = () => { const t = p.fill(); if (t == null) return say(p.label, p.missing); const i = $('#ask'); i.value = t; i.focus(); };
-  } else { b.disabled = true; b.title = 'needs the agent bridge (POST /agent) — Phase 2'; }
+  } else { b.disabled = true; b.classList.add('agent-pill'); b.title = 'needs the agent bridge — enable MCP_BRIDGE_ALLOW_AGENT'; b.onclick = () => runAgentPreset(p); }
   $('#chips').appendChild(w);
 });
+// One-click agent preset: auto-attach its data chips, then send its template.
+async function runAgentPreset(p) {
+  try {
+    for (const id of p.attach) {
+      if (!attached.has(id)) { const dp = PRESETS.find((x) => x.id === id); attached.set(id, { label: dp.label, text: await dp.text() }); }
+    }
+    renderAttached();
+    runPrompt(p.template);
+  } catch (e) { say(p.label, 'failed: ' + e.message); }
+}
 
-// Free text + attached context. No model behind it yet — compose the full prompt
-// (user text + captured data blocks) and hand it to Claude Code. When Phase 2's
-// POST /agent lands, this exact string posts there instead.
+// ── send to Claude ────────────────────────────────────────────────────────
+// Composes user text + attached context blocks. With the agent bridge enabled
+// (/health.agent) it POSTs to /agent and polls until the saved report is ready;
+// otherwise it falls back to copying the prompt for Claude Code.
+const auth = () => token ? { Authorization: 'Bearer ' + token } : {};
+let agentOn = false, agentChecked = false, runLine = null, runTimer = null, statusTimer = null, runStart = 0;
+async function checkAgent() {
+  if (agentChecked) return; agentChecked = true;
+  try { const j = await (await fetch('/health', { headers: auth() })).json().catch(() => ({})); agentOn = !!j.agent; } catch {}
+  if (agentOn) {
+    $('#askBtn').textContent = 'send to Claude';
+    document.querySelectorAll('.agent-pill').forEach((b) => { b.disabled = false; b.title = 'runs claude -p on your machine'; });
+    pollStatus(true); // reattach if a run is already in progress (e.g. after a reload)
+  }
+}
+function setBusy(b) {
+  $('#askBtn').disabled = b;
+  document.querySelectorAll('.agent-pill').forEach((x) => { x.disabled = b || !agentOn; });
+}
+function beginRun(elapsedMs) {
+  runStart = Date.now() - (elapsedMs || 0);
+  runLine = say('claude', 'running… 0:00');
+  setBusy(true);
+  runTimer = setInterval(() => {
+    const s = Math.floor((Date.now() - runStart) / 1000);
+    runLine.textContent = 'running… ' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }, 1000);
+  statusTimer = setInterval(() => pollStatus(false), 3000);
+}
+async function pollStatus(reattach) {
+  let j;
+  try { j = await (await fetch('/agent/status', { headers: auth() })).json(); } catch { return; }
+  if (reattach) { if (j.state === 'running' && !runLine) beginRun(j.elapsedMs); return; }
+  if (j.state === 'running' || !runLine) return;
+  clearInterval(runTimer); clearInterval(statusTimer); setBusy(false);
+  if (j.state === 'done' && j.reportId) {
+    try {
+      const r = await (await fetch('/reports/' + j.reportId, { headers: auth() })).json();
+      runLine.textContent = r.summary + '\n\n';
+      const a = document.createElement('a'); a.href = '/viewer#reports/' + r.id; a.target = '_blank'; a.textContent = 'open report ↗';
+      runLine.appendChild(a);
+    } catch (e) { runLine.textContent = 'done, but failed to load the report: ' + e.message; }
+  } else if (j.state === 'error') runLine.textContent = 'failed: ' + (j.error || 'unknown error');
+  else runLine.textContent = 'run state lost (bridge restarted?)';
+  runLine = null;
+}
 async function runPrompt(text) {
   const t = text.trim();
   if (!t && !attached.size) return;
   say('you', t + (attached.size ? '\n[+ ' + [...attached.values()].map((v) => v.label).join(', ') + ']' : ''));
   let cmd = '/strategy-gate-debug ' + t;
   attached.forEach((v) => { cmd += '\n\n### context: ' + v.label + '\n' + v.text; });
+  if (agentOn) {
+    if (runLine) return say('claude', 'a run is already in progress — wait for it to finish');
+    try {
+      const res = await fetch('/agent', { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth() },
+        body: JSON.stringify({ prompt: cmd, title: t.slice(0, 60), context: [...attached.values()].map((v) => v.label) }) });
+      const j = await res.json().catch(() => ({}));
+      if (res.status === 409) return say('claude', 'a run is already in progress — wait for it to finish');
+      if (!res.ok) return say('claude', 'failed to start: ' + (j.error || ('HTTP ' + res.status)));
+      attached.clear(); renderAttached(); $('#ask').value = '';
+      beginRun(0);
+    } catch (e) { say('claude', 'failed to start: ' + e.message); }
+    return;
+  }
   let copied = false;
   try { await navigator.clipboard.writeText(cmd); copied = true; } catch {}
-  say('no agent bridge yet', copied
+  say('no agent bridge', copied
     ? 'Copied to your clipboard (' + cmd.length + ' chars' + (attached.size ? ', ' + attached.size + ' context block' + (attached.size > 1 ? 's' : '') : '') + '). Paste into Claude Code.'
     : 'Run this in Claude Code:\n\n' + cmd);
   attached.clear(); renderAttached(); $('#ask').value = '';
 }
 $('#askBtn').onclick = () => runPrompt($('#ask').value);
 $('#ask').addEventListener('keydown', (e) => { if (e.key === 'Enter') runPrompt($('#ask').value); });
+
+// ── reports tab ───────────────────────────────────────────────────────────
+const inline = (s) => s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
+function md(src) {
+  // minimal renderer: escape everything first, then headings/lists/tables/code/bold.
+  const lines = src.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').split('\n');
+  const out = []; let code = null, list = false, tbl = false;
+  const closeAll = () => { if (list) { out.push('</ul>'); list = false; } if (tbl) { out.push('</table>'); tbl = false; } };
+  for (const raw of lines) {
+    if (code !== null) { if (/^```/.test(raw)) { out.push('<pre>' + code.join('\n') + '</pre>'); code = null; } else code.push(raw); continue; }
+    const l = raw.trimEnd();
+    if (/^```/.test(l)) { closeAll(); code = []; continue; }
+    const h = l.match(/^(#{1,4}) +(.*)/);
+    if (h) { closeAll(); out.push('<h' + h[1].length + '>' + inline(h[2]) + '</h' + h[1].length + '>'); continue; }
+    if (/^[-*] +/.test(l)) { if (tbl) { out.push('</table>'); tbl = false; } if (!list) { out.push('<ul>'); list = true; } out.push('<li>' + inline(l.replace(/^[-*] +/, '')) + '</li>'); continue; }
+    if (/^\|.*\|$/.test(l)) { if (list) { out.push('</ul>'); list = false; } if (/^\|[\s:|-]+\|$/.test(l)) continue; if (!tbl) { out.push('<table>'); tbl = true; } out.push('<tr>' + l.slice(1, -1).split('|').map((c) => '<td>' + inline(c.trim()) + '</td>').join('') + '</tr>'); continue; }
+    closeAll();
+    if (l) out.push('<p>' + inline(l) + '</p>');
+  }
+  if (code !== null) out.push('<pre>' + code.join('\n') + '</pre>');
+  closeAll();
+  return out.join('\n');
+}
+async function loadReports() {
+  $('#repDetail').hidden = true; const L = $('#repList'); L.hidden = false;
+  try {
+    const j = await (await fetch('/reports', { headers: auth() })).json();
+    L.innerHTML = '';
+    if (!j.reports || !j.reports.length) { L.innerHTML = '<div class="placeholder">No reports yet. Send a prompt to Claude (or run an agent pill) — finished analyses are saved here.</div>'; return; }
+    j.reports.forEach((r) => {
+      const c = document.createElement('div'); c.className = 'rcard';
+      c.innerHTML = '<div class="rt"></div><div class="rm"></div><div class="rs"></div>';
+      c.children[0].textContent = r.title;
+      c.children[1].textContent = r.createdAt.slice(0, 16).replace('T', ' ') + 'Z · ' + r.type + (r.context && r.context.length ? ' · [' + r.context.join(', ') + ']' : '');
+      c.children[2].textContent = r.summary || '';
+      c.onclick = () => { location.hash = 'reports/' + r.id; };
+      L.appendChild(c);
+    });
+  } catch (e) { L.innerHTML = '<div class="placeholder">failed to load reports</div>'; }
+}
+async function openReport(id) {
+  $('#repList').hidden = true; const D = $('#repDetail'); D.hidden = false; D.innerHTML = '<div class="placeholder">loading…</div>';
+  try {
+    const r = await (await fetch('/reports/' + encodeURIComponent(id), { headers: auth() })).json();
+    if (r.error) throw new Error(r.error);
+    D.innerHTML = '';
+    const top = document.createElement('div'); top.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px';
+    top.innerHTML = '<span class="k"></span><span><button class="rep-back">← all reports</button> <button class="rep-del">delete</button></span>';
+    top.querySelector('.k').textContent = r.createdAt.slice(0, 16).replace('T', ' ') + 'Z · ' + Math.round((r.elapsedMs || 0) / 1000) + 's'
+      + (r.context && r.context.length ? ' · context: ' + r.context.join(', ') : '');
+    D.appendChild(top);
+    const body = document.createElement('div'); body.className = 'md'; body.innerHTML = md(r.body_md || ''); D.appendChild(body);
+    const det = document.createElement('details'); det.style.marginTop = '10px';
+    det.innerHTML = '<summary class="k" style="cursor:pointer">prompt that produced this</summary><pre style="white-space:pre-wrap;color:var(--ink2);font-size:12px"></pre>';
+    det.querySelector('pre').textContent = r.prompt || '';
+    D.appendChild(det);
+    top.querySelector('.rep-back').onclick = () => { location.hash = 'reports'; };
+    top.querySelector('.rep-del').onclick = async () => { await fetch('/reports/' + encodeURIComponent(r.id), { method: 'DELETE', headers: auth() }); location.hash = 'reports'; };
+  } catch (e) { D.innerHTML = '<div class="placeholder">failed to load this report</div>'; }
+}
 
 // ── edu mode ──────────────────────────────────────────────────────────────
 const GLOSSARY = {
@@ -463,7 +607,7 @@ document.addEventListener('mouseover', (e) => {
 });
 document.addEventListener('mouseout', (e) => { if (e.target.closest && e.target.closest('.term')) $('#tip').style.display = 'none'; });
 
-showTab(location.hash.slice(1) || 'audit');
+route();
 if (token === null) showTokenBar(); else start();
 })();
 </script>

@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -106,11 +107,76 @@ test('viewer file is small and fully self-contained', () => {
   // It exists to catch an inlined library or a base64 asset, not to freeze the feature
   // set — the self-containment assertions below are the load-bearing ones. Raise it
   // deliberately per phase; do not bump it just to make a commit pass.
-  assert.ok(statSync(VIEWER).size < 40 * 1024, 'viewer must stay under 40 KB');
+  assert.ok(statSync(VIEWER).size < 48 * 1024, 'viewer must stay under 48 KB');
   const html = readFileSync(VIEWER, 'utf8');
   assert.ok(!/<script[^>]+src=/i.test(html), 'no external scripts');
   assert.ok(!/<link[^>]+href=/i.test(html), 'no external stylesheets');
   assert.ok(!/@import|https?:\/\//i.test(html.replace(/<!--[\s\S]*?-->/g, '')), 'no remote loads');
   assert.ok(html.includes('document.hidden'), 'pauses when hidden');
   assert.ok(html.includes('refresh'), 'supports ?refresh=');
+});
+
+// ── agent + reports (Phase 2) ────────────────────────────────────────────────
+
+test('agent endpoints are 404 while MCP_BRIDGE_ALLOW_AGENT is unset', async () => {
+  const h = { Authorization: 'Bearer ' + TOKEN };
+  assert.equal((await fetch(base + '/agent', { method: 'POST', headers: h, body: '{}' })).status, 404);
+  assert.equal((await fetch(base + '/agent/status', { headers: h })).status, 404);
+});
+
+test('agent job: run → 409 while busy → report saved, listed, fetched, deleted', async (t) => {
+  const fakebin = path.join(__dirname, 'fixtures', 'fakebin');
+  const repDir = path.join(tmpdir(), 'tv-bridge-reports-' + Date.now());
+  const p2 = spawn(process.execPath, [BRIDGE], {
+    env: {
+      ...process.env, MCP_BRIDGE_PORT: '0', MCP_BRIDGE_TOKEN: TOKEN, MCP_SERVER_PATH: STUB,
+      MCP_BRIDGE_ALLOW_AGENT: '1', MCP_BRIDGE_REPORTS_DIR: repDir,
+      PATH: fakebin + path.delimiter + process.env.PATH,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(() => { try { p2.kill('SIGTERM'); } catch {} });
+  const base2 = await new Promise((resolve, reject) => {
+    let out = '';
+    const timer = setTimeout(() => reject(new Error('agent bridge did not bind:\n' + out)), 8000);
+    const onData = (d) => {
+      out += d;
+      const m = out.match(/listening on (http:\/\/127\.0\.0\.1:(\d+))/);
+      if (m && m[2] !== '0') { clearTimeout(timer); resolve(m[1]); }
+    };
+    p2.stdout.on('data', onData); p2.stderr.on('data', onData);
+    p2.on('exit', (c) => { clearTimeout(timer); reject(new Error('agent bridge exited ' + c + ':\n' + out)); });
+  });
+  const H = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+
+  assert.equal((await fetch(base2 + '/agent/status')).status, 401, 'agent endpoints stay token-gated');
+  const health = await (await fetch(base2 + '/health', { headers: H })).json();
+  assert.equal(health.agent, true, '/health advertises the agent');
+
+  const start = await fetch(base2 + '/agent', { method: 'POST', headers: H, body: JSON.stringify({ prompt: 'test run', context: ['x'] }) });
+  assert.equal(start.status, 200);
+  const { id } = await start.json();
+  assert.ok(id);
+  assert.equal((await fetch(base2 + '/agent', { method: 'POST', headers: H, body: JSON.stringify({ prompt: 'again' }) })).status, 409, 'second run while busy → 409');
+
+  let st;
+  for (let i = 0; i < 60; i++) {
+    st = await (await fetch(base2 + '/agent/status', { headers: H })).json();
+    if (st.state !== 'running') break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  assert.equal(st.state, 'done', 'run finished: ' + JSON.stringify(st));
+  assert.equal(st.reportId, id);
+
+  const list = await (await fetch(base2 + '/reports', { headers: H })).json();
+  assert.equal(list.count, 1);
+  assert.equal(list.reports[0].title, 'Fake Analysis');
+  const rep = await (await fetch(base2 + '/reports/' + id, { headers: H })).json();
+  assert.match(rep.body_md, /summary paragraph/);
+  assert.match(rep.summary, /summary paragraph/);
+  assert.deepEqual(rep.context, ['x']);
+
+  assert.equal((await fetch(base2 + '/reports/NOPE!', { headers: H })).status, 400, 'unsafe report id rejected');
+  assert.equal((await fetch(base2 + '/reports/' + id, { method: 'DELETE', headers: H })).status, 200);
+  assert.equal((await fetch(base2 + '/reports/' + id, { headers: H })).status, 404);
 });

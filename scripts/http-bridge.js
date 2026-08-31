@@ -14,6 +14,10 @@
  *   GET  /tools   → { tools: [{ name, description }] }
  *   POST /call    → body { tool, params } → MCP tool result (JSON; 503 when the
  *                   tool failed because TradingView/CDP is unreachable)
+ *   POST /agent   → { prompt } → { id }; runs `claude -p` on this host (opt-in via
+ *                   MCP_BRIDGE_ALLOW_AGENT=1 — NEVER behind a tunnel); one at a time
+ *   GET  /agent/status → { busy, state, elapsedMs, reportId?, error? }
+ *   GET  /reports[/:id], DELETE /reports/:id → saved analysis reports (reports/*.json)
  *
  * Env:
  *   MCP_BRIDGE_PORT   default 3001
@@ -25,7 +29,7 @@
  */
 
 import http from 'node:http';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, unlinkSync, mkdirSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -36,6 +40,11 @@ const BRIDGE_PORT = parseInt(process.env.MCP_BRIDGE_PORT ?? '3001', 10);
 const BRIDGE_HOST = process.env.MCP_BRIDGE_HOST ?? '127.0.0.1';
 const BRIDGE_TOKEN = process.env.MCP_BRIDGE_TOKEN ?? '';
 const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH ?? path.join(__dirname, '..', 'src', 'server.js');
+// Agent runs are prompt-driven code execution on this host: opt-in only, and
+// NEVER enable behind a tunnel. Token-gated on top of the flag.
+const ALLOW_AGENT = process.env.MCP_BRIDGE_ALLOW_AGENT === '1';
+const AGENT_TIMEOUT_MS = parseInt(process.env.MCP_BRIDGE_AGENT_TIMEOUT_MS ?? '300000', 10);
+const REPORTS_DIR = process.env.MCP_BRIDGE_REPORTS_DIR ?? path.join(__dirname, '..', 'reports');
 const CDP_PROBE_URL = 'http://localhost:9222/json/version';
 const VIEWER_PATH = path.join(__dirname, 'viewer', 'gate-audit.html');
 const CDP_DOWN_RE = /CDP connection failed|not running with CDP|ECONNREFUSED|No TradingView chart target|9222/i;
@@ -127,6 +136,64 @@ function writeJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// ── agent job (one at a time, buffered — the viewer polls /agent/status) ─────
+let agentRun = null; // { id, startedAt, state: 'running'|'done'|'error', reportId?, error? }
+const newId = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+const SAFE_ID = /^[a-z0-9-]+$/;
+const reportPath = (id) => path.join(REPORTS_DIR, id + '.json');
+
+function extractTitle(out, prompt) {
+  const h = out.match(/^#{1,3} +(.+)$/m);
+  return (h ? h[1] : prompt.replace(/^\/\S+\s*/, '')).trim().slice(0, 80) || 'analysis';
+}
+function extractSummary(out) {
+  for (const block of out.split(/\n\s*\n/)) {
+    const t = block.trim();
+    if (t && !/^#/.test(t) && !/^```/.test(t)) return t.replace(/[*_`]/g, '').slice(0, 400);
+  }
+  return out.trim().slice(0, 400);
+}
+
+function startAgent(prompt, title, context) {
+  const id = newId();
+  agentRun = { id, startedAt: Date.now(), state: 'running' };
+  // Pinned argv, no shell. mcp__tradingview allows every tool of that server and
+  // nothing else; never --dangerously-skip-permissions. MCP_BRIDGE_* is stripped
+  // so a run cannot see this bridge's token or recurse into it.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('MCP_BRIDGE_')));
+  const child = spawn('claude', ['-p', prompt, '--allowedTools', 'mcp__tradingview', 'Read', 'Grep', 'Glob'],
+    { cwd: path.join(__dirname, '..'), env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '', err = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', (d) => { err += d; });
+  const killer = setTimeout(() => { try { child.kill('SIGTERM'); } catch {} setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 5000).unref(); }, AGENT_TIMEOUT_MS);
+  child.on('error', (e) => { clearTimeout(killer); agentRun = { ...agentRun, state: 'error', error: 'claude CLI not runnable: ' + e.message }; });
+  child.on('exit', (code) => {
+    clearTimeout(killer);
+    if (agentRun?.id !== id) return;
+    const elapsedMs = Date.now() - agentRun.startedAt;
+    if (code !== 0 || !out.trim()) {
+      agentRun = { ...agentRun, state: 'error', error: (err || out || 'claude exited ' + code).trim().slice(-800) };
+      console.error(`[bridge] agent run ${id} failed (exit ${code})`);
+      return;
+    }
+    const report = {
+      id, createdAt: new Date(agentRun.startedAt).toISOString(), type: 'analysis',
+      title: title || extractTitle(out, prompt), prompt, context: context || [],
+      summary: extractSummary(out), body_md: out.trim(), elapsedMs,
+    };
+    try {
+      mkdirSync(REPORTS_DIR, { recursive: true });
+      writeFileSync(reportPath(id), JSON.stringify(report, null, 2));
+      agentRun = { ...agentRun, state: 'done', reportId: id };
+      console.log(`[bridge] agent run ${id} done in ${Math.round(elapsedMs / 1000)}s → reports/${id}.json`);
+    } catch (e) {
+      agentRun = { ...agentRun, state: 'error', error: 'report write failed: ' + e.message };
+    }
+  });
+  return id;
+}
+
 function authorized(req) {
   if (!BRIDGE_TOKEN) return true;
   const header = req.headers['authorization'] ?? '';
@@ -171,14 +238,58 @@ const server = http.createServer(async (req, res) => {
         cdpOk = cdpRes.ok;
       } catch { cdpOk = false; }
       if (!cdpOk) {
-        writeJson(res, 503, { ok: false, connected: false, error: 'TradingView Desktop not running with --remote-debugging-port=9222' });
+        writeJson(res, 503, { ok: false, connected: false, agent: ALLOW_AGENT, error: 'TradingView Desktop not running with --remote-debugging-port=9222' });
         return;
       }
-      writeJson(res, 200, { ok: true, connected: true, server: MCP_SERVER_PATH });
+      writeJson(res, 200, { ok: true, connected: true, agent: ALLOW_AGENT, server: MCP_SERVER_PATH });
     } catch (err) {
-      writeJson(res, 503, { ok: false, connected: false, error: err.message });
+      writeJson(res, 503, { ok: false, connected: false, agent: ALLOW_AGENT, error: err.message });
     }
     return;
+  }
+
+  if (pathname === '/agent' || pathname === '/agent/status') {
+    if (!ALLOW_AGENT) { writeJson(res, 404, { error: 'agent endpoint disabled — set MCP_BRIDGE_ALLOW_AGENT=1 (local use only, never behind a tunnel)' }); return; }
+    if (req.method === 'GET' && pathname === '/agent/status') {
+      writeJson(res, 200, agentRun
+        ? { busy: agentRun.state === 'running', id: agentRun.id, state: agentRun.state, elapsedMs: Date.now() - agentRun.startedAt, reportId: agentRun.reportId, error: agentRun.error }
+        : { busy: false, state: 'idle' });
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/agent') {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        let prompt, title, context;
+        try { ({ prompt, title, context } = JSON.parse(body)); } catch { writeJson(res, 400, { error: 'Invalid JSON body — expected { "prompt": "..." }' }); return; }
+        if (!prompt || typeof prompt !== 'string') { writeJson(res, 400, { error: 'Missing "prompt"' }); return; }
+        if (agentRun && agentRun.state === 'running') { writeJson(res, 409, { error: 'a run is already in progress', id: agentRun.id }); return; }
+        writeJson(res, 200, { id: startAgent(prompt, title, context) });
+      });
+      return;
+    }
+  }
+
+  if (pathname === '/reports' || pathname.startsWith('/reports/')) {
+    const id = pathname.slice('/reports/'.length);
+    try {
+      if (req.method === 'GET' && pathname === '/reports') {
+        let files = [];
+        try { files = readdirSync(REPORTS_DIR).filter((f) => f.endsWith('.json')); } catch {}
+        const list = files.map((f) => {
+          try { const r = JSON.parse(readFileSync(path.join(REPORTS_DIR, f), 'utf8')); return { id: r.id, createdAt: r.createdAt, type: r.type, title: r.title, summary: r.summary, context: r.context }; }
+          catch { return null; }
+        }).filter(Boolean).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        writeJson(res, 200, { count: list.length, reports: list });
+        return;
+      }
+      if (!SAFE_ID.test(id)) { writeJson(res, 400, { error: 'bad report id' }); return; }
+      if (req.method === 'GET') { writeJson(res, 200, JSON.parse(readFileSync(reportPath(id), 'utf8'))); return; }
+      if (req.method === 'DELETE') { unlinkSync(reportPath(id)); writeJson(res, 200, { deleted: id }); return; }
+    } catch (err) {
+      writeJson(res, err.code === 'ENOENT' ? 404 : 500, { error: err.code === 'ENOENT' ? 'no such report' : err.message });
+      return;
+    }
   }
 
   if (req.method === 'GET' && pathname === '/tools') {
@@ -225,7 +336,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  writeJson(res, 404, { error: 'Not found. Endpoints: GET /viewer, GET /health, GET /tools, POST /call' });
+  writeJson(res, 404, { error: 'Not found. Endpoints: GET /viewer, GET /health, GET /tools, POST /call, POST /agent, GET /agent/status, GET|DELETE /reports[/:id]' });
 });
 
 server.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
@@ -233,6 +344,7 @@ server.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
   console.log(`[bridge] TradingView MCP HTTP bridge listening on http://${BRIDGE_HOST}:${port}`);
   console.log(`[bridge] Gate Audit viewer: http://${BRIDGE_HOST}:${port}/viewer`);
   console.log(`[bridge] MCP server path: ${MCP_SERVER_PATH}`);
+  console.log(`[bridge] agent endpoint: ${ALLOW_AGENT ? 'ENABLED (local runs of claude -p)' : 'disabled (MCP_BRIDGE_ALLOW_AGENT=1 to enable)'}`);
   if (!BRIDGE_TOKEN) {
     console.log('[bridge] WARNING: MCP_BRIDGE_TOKEN is not set. Do NOT expose this port through a tunnel without a token.');
   }
