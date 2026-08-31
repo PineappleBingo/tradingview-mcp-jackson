@@ -27,6 +27,21 @@ th{color:var(--ink2);cursor:pointer;user-select:none;background:var(--bg)}tbody 
 #drawer{position:fixed;right:0;top:0;height:100%;width:min(520px,100%);background:var(--panel);border-left:1px solid var(--line);padding:14px;overflow:auto;z-index:6}
 #drawer pre{white-space:pre-wrap;font-size:12px;color:var(--ink2)}#drawer .tpl{color:var(--ink);background:var(--bg);padding:10px;border-radius:4px;border:1px solid var(--line)}
 .num{text-align:right}h2{font-size:12px;color:var(--ink2);margin:0 0 8px;text-transform:uppercase;letter-spacing:.05em}
+#tabs{display:flex;gap:2px;padding:0 14px;border-bottom:1px solid var(--line)}
+#tabs button{background:none;border:none;border-bottom:2px solid transparent;border-radius:0;padding:7px 14px;color:var(--ink2)}
+#tabs button.on{color:var(--ink);border-bottom-color:var(--accent)}
+#prompt{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line)}
+#prompt input{flex:1;min-width:240px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:5px 8px;font:inherit}
+#chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:3px 10px;font-size:12px;color:var(--ink2);cursor:pointer}
+.chip:hover:not([disabled]){border-color:var(--accent);color:var(--ink)}.chip[disabled]{opacity:.45;cursor:not-allowed}
+#console{margin:10px 14px 0;border:1px solid var(--line);border-radius:4px;background:var(--panel);max-height:340px;overflow:auto;padding:8px 10px}
+.msg{margin-bottom:10px}.msg .who{color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.msg pre{margin:3px 0 0;white-space:pre-wrap;font-size:12px;color:var(--ink2)}
+.placeholder{color:var(--ink2);border:1px dashed var(--line);border-radius:4px;padding:14px}
+.term{border-bottom:1px dotted transparent}body.edu .term{border-bottom-color:var(--warn);cursor:help}
+.edu-note{display:none;color:var(--ink2);font-size:12px;border-left:2px solid var(--warn);padding:4px 0 4px 8px;margin:8px 0 0}
+body.edu .edu-note{display:block}#eduBtn.on{border-color:var(--warn);color:var(--warn)}
 </style>
 </head>
 <body>
@@ -41,11 +56,27 @@ th{color:var(--ink2);cursor:pointer;user-select:none;background:var(--bg)}tbody 
   <span class="k">refresh <b id="refreshLbl"></b>s</span>
   <span class="k" id="status"></span>
   <button id="nowBtn" title="refresh now">↻</button>
+  <button id="eduBtn" title="beginner explanations + hover glossary">edu</button>
   <button id="tokenBtn" title="forget the stored bridge token">token</button>
 </header>
 <form id="tokbar" hidden><span class="k">bridge token</span><input id="tok" type="password" autocomplete="off" placeholder="MCP_BRIDGE_TOKEN (leave empty if the bridge has none)"><button type="submit">connect</button><span class="k" id="tokmsg"></span></form>
 <div id="banner" hidden></div>
 
+<nav id="tabs">
+  <button id="tb-audit" class="on">Audit</button>
+  <button id="tb-reports">Reports</button>
+  <button id="tb-backtest">Backtest</button>
+  <button id="tb-optimize">Optimize</button>
+</nav>
+
+<div id="prompt">
+  <input id="ask" placeholder="ask about the strategy — e.g. why was the 13:30 short blocked?">
+  <button id="askBtn">run</button>
+  <span id="chips"></span>
+</div>
+<div id="console" hidden></div>
+
+<div id="tab-audit">
 <section>
   <h2>Verdict per bar</h2>
   <div class="legend"><span>upper half = LONG ▲ · lower half = SHORT ▼</span>
@@ -65,6 +96,32 @@ th{color:var(--ink2);cursor:pointer;user-select:none;background:var(--bg)}tbody 
   <h2>Pattern bars</h2>
   <div style="overflow-x:auto"><table id="tbl"><thead><tr></tr></thead><tbody></tbody></table></div>
 </section>
+</div>
+
+<div id="tab-reports" hidden>
+<section>
+  <h2>Reports</h2>
+  <div class="placeholder">Saved analyses land here in <b>Phase 2</b>, once the agent bridge (<code>POST /agent</code>) exists. Nothing is stored yet — the deterministic presets above print into the console instead.</div>
+  <div class="edu-note">A <span class="term" data-term="report">report</span> is a frozen snapshot of one analysis — the verdicts, the numbers and the written explanation — so you can compare today's behaviour against last week's instead of relying on memory.</div>
+</section>
+</div>
+
+<div id="tab-backtest" hidden>
+<section>
+  <h2>Backtest</h2>
+  <div class="placeholder">Reads the live TradingView <b>Strategy Tester</b> — no simulator is written. Lands in <b>Phase 3</b>: configure inputs, run, then equity curve, key metrics and trades.</div>
+  <div class="edu-note">A <span class="term" data-term="backtest">backtest</span> replays a strategy over past bars to estimate how it would have performed. Headline numbers to read first: <span class="term" data-term="profit factor">profit factor</span>, <span class="term" data-term="max drawdown">max drawdown</span> and <span class="term" data-term="win rate">win rate</span>. Past results never guarantee future ones.</div>
+</section>
+</div>
+
+<div id="tab-optimize" hidden>
+<section>
+  <h2>Optimize</h2>
+  <div class="placeholder">Parameter <span class="term" data-term="sweep">sweep</span> across input combinations, with equity-vs-baseline overlay and a results matrix. Lands in <b>Phase 4</b>.</div>
+  <div class="edu-note">A sweep re-runs the backtest once per combination of settings. Treat the winner as <b>a direction, not a result</b> — picking the best of many runs on one window is how <span class="term" data-term="overfitting">overfitting</span> happens. Re-check on a date range you did not tune on.</div>
+</section>
+</div>
+
 <div id="tip"></div>
 <aside id="drawer" hidden></aside>
 
@@ -236,6 +293,109 @@ function render() {
   drawStrip(); drawHeat(); drawHist(); drawTable();
   if (s.missingColumns.length) banner('Profile columns missing on this study: ' + s.missingColumns.join(', ') + ' — metrics for them show blank.');
 }
+// ── tabs ──────────────────────────────────────────────────────────────────
+// viewState carries context when a preset sends you to another tab.
+const TABS = ['audit', 'reports', 'backtest', 'optimize'];
+const viewState = { tab: 'audit' };
+function showTab(name, ctx) {
+  if (!TABS.includes(name)) name = 'audit';
+  Object.assign(viewState, ctx || {}, { tab: name });
+  TABS.forEach((t) => { $('#tab-' + t).hidden = t !== name; $('#tb-' + t).classList.toggle('on', t === name); });
+  if (location.hash.slice(1) !== name) location.hash = name;
+  if (name === 'audit' && data) render(); // canvases measure 0 while hidden — redraw on return
+}
+TABS.forEach((t) => { $('#tb-' + t).onclick = () => showTab(t); });
+addEventListener('hashchange', () => showTab(location.hash.slice(1) || 'audit'));
+
+// ── console ───────────────────────────────────────────────────────────────
+function say(who, text) {
+  const c = $('#console'); c.hidden = false;
+  const d = document.createElement('div'); d.className = 'msg';
+  d.innerHTML = '<div class="who"></div><pre></pre>';
+  d.querySelector('.who').textContent = who;
+  const pre = d.querySelector('pre'); pre.textContent = text;
+  c.appendChild(d); c.scrollTop = c.scrollHeight;
+  return pre;
+}
+// Tool payloads vary by tool; find the first array rather than assume a key.
+const rowsOf = (r) => Array.isArray(r) ? r : (['trades', 'rows', 'data', 'results', 'items'].map((k) => r && r[k]).find(Array.isArray) || []);
+const table = (rows) => rows.map((r) => typeof r === 'object' && r ? Object.entries(r).map(([k, v]) => k + '=' + (v && typeof v === 'object' ? JSON.stringify(v) : v)).join('  ') : String(r)).join('\n');
+
+// ── presets ───────────────────────────────────────────────────────────────
+// Add an entry here to add a command. kind:'js' runs locally over POST /call.
+async function presetLastEntries() {
+  const out = say('last 10 entries', 'loading…');
+  const rows = rowsOf(await call('data_get_trades', { max_trades: 10 }));
+  out.textContent = rows.length ? table(rows) : 'the Strategy Tester reported no trades — is a strategy (not an indicator) loaded?';
+}
+function presetLastBlocked() {
+  if (!data) return say('last 10 blocked', 'no audit data yet — wait for the first poll');
+  const b = data.verdicts.filter((v) => v.side && !v.fired && !v.live).slice(-10).reverse();
+  say('last 10 blocked', b.length ? b.map((v) =>
+    v.iso.slice(5, 16).replace('T', ' ') + '  ' + v.side + '  ' + (v.reasonName || '') + '  → blocked by ' + (v.blocker || '?') +
+    (v.governingInputs && v.governingInputs.length ? '\n    governing input: ' + v.governingInputs.join(' · ') : '')).join('\n') : 'no blocked bars in range');
+}
+function presetWorstBlocker() {
+  if (!data) return say('worst blocker', 'no audit data yet — wait for the first poll');
+  const top = Object.entries(data.summary.blockerHistogram).sort((a, b) => b[1] - a[1])[0];
+  if (!top) return say('worst blocker', 'no blocked bars in range');
+  filterBlocker = top[0]; drawHist(); drawTable(); showTab('audit');
+  say('worst blocker', top[0] + ' blocked ' + top[1] + ' bars — Pattern bars table filtered to it');
+}
+const PRESETS = [
+  { label: 'last 10 entries', kind: 'js', run: presetLastEntries },
+  { label: 'last 10 blocked', kind: 'js', run: presetLastBlocked },
+  { label: 'worst blocker', kind: 'js', run: presetWorstBlocker, tab: 'audit' },
+  { label: 'why blocked + code review', kind: 'agent', tab: 'reports' },
+  { label: 'analyse last 10 entries', kind: 'agent', tab: 'reports' },
+];
+PRESETS.forEach((p) => {
+  const b = document.createElement('button'); b.className = 'chip'; b.textContent = p.label;
+  if (p.kind === 'agent') { b.disabled = true; b.title = 'needs the agent bridge (POST /agent) — Phase 2'; }
+  else b.onclick = () => Promise.resolve(p.run()).catch((e) => say(p.label, 'failed: ' + e.message));
+  $('#chips').appendChild(b);
+});
+
+// Free text has no model behind it yet — hand the prompt to Claude Code instead of pretending.
+async function runPrompt(text) {
+  const t = text.trim(); if (!t) return;
+  say('you', t);
+  const cmd = '/strategy-gate-debug ' + t;
+  let copied = false;
+  try { await navigator.clipboard.writeText(cmd); copied = true; } catch {}
+  say('no agent bridge yet', (copied ? 'Copied to your clipboard. Paste it into Claude Code:\n\n' : 'Run this in Claude Code:\n\n') + cmd);
+  $('#ask').value = '';
+}
+$('#askBtn').onclick = () => runPrompt($('#ask').value);
+$('#ask').addEventListener('keydown', (e) => { if (e.key === 'Enter') runPrompt($('#ask').value); });
+
+// ── edu mode ──────────────────────────────────────────────────────────────
+const GLOSSARY = {
+  report: 'A saved snapshot of one analysis, so runs can be compared over time.',
+  backtest: 'Replaying a strategy over past bars to estimate how it would have performed.',
+  'profit factor': 'Gross profit ÷ gross loss. Above 1.0 is net-positive; below 1.0 loses money.',
+  'max drawdown': 'The largest peak-to-trough fall in equity. How much pain the strategy handed you.',
+  'win rate': 'Share of trades that closed positive. High win rate ≠ profitable if losers are large.',
+  sweep: 'Re-running the backtest once per combination of input settings.',
+  overfitting: 'Tuning until the past looks great, at the cost of the future. The main risk of sweeps.',
+  blocker: 'The single gate held responsible for stopping an entry, by priority order.',
+};
+let edu = false; try { edu = localStorage.getItem('eduMode') === '1'; } catch {}
+function setEdu(on) {
+  edu = on; document.body.classList.toggle('edu', on); $('#eduBtn').classList.toggle('on', on);
+  try { localStorage.setItem('eduMode', on ? '1' : '0'); } catch {}
+}
+$('#eduBtn').onclick = () => setEdu(!edu);
+setEdu(edu);
+document.addEventListener('mouseover', (e) => {
+  const el = e.target.closest && e.target.closest('.term'); if (!edu || !el) return;
+  const g = GLOSSARY[el.dataset.term]; if (!g) return;
+  const t = $('#tip'); t.textContent = g; t.style.display = 'block';
+  t.style.left = Math.min(e.clientX + 12, innerWidth - t.offsetWidth - 8) + 'px'; t.style.top = (e.clientY + 14) + 'px';
+});
+document.addEventListener('mouseout', (e) => { if (e.target.closest && e.target.closest('.term')) $('#tip').style.display = 'none'; });
+
+showTab(location.hash.slice(1) || 'audit');
 if (token === null) showTokenBar(); else start();
 })();
 </script>
