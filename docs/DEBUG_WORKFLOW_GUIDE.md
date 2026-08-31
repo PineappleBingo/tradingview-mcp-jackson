@@ -85,10 +85,17 @@ suggestion: 회복 구간이 반복 차단되면 Median Baseline 전환 또는 R
 Claude 없이 차트를 보면서 게이트 상태를 실시간으로 확인하려면 HTTP 브리지의 뷰어를 연다:
 
 ```bash
+./run.sh          # 권장 — 주소와 토큰을 화면에 출력한다
+# 또는 직접:
 MCP_BRIDGE_TOKEN=mysecret node scripts/http-bridge.js
 # 브라우저에서  http://127.0.0.1:3001/viewer
 #   옵션: ?refresh=10 (초, 최소 2) &count=200 (봉 수, 최대 500) &study=PF%203G &profile=pf3g-vp
 ```
+
+> ⚠️ **ChromeOS(Crostini)에서는 `127.0.0.1`이 동작하지 않는다** — 브라우저가 컨테이너 밖에서 돌기 때문.
+> `penguin.linux.test`도 해석되지 않을 수 있다(`ERR_NAME_NOT_RESOLVED`). 컨테이너 IP를 써야 한다:
+> `ip -4 -o addr show scope global | awk 'NR==1{split($4,a,"/"); print a[1]}'`
+> 자세한 내용과 토큰 확인 방법은 [`GATE_AUDIT_GUIDE.md`](./GATE_AUDIT_GUIDE.md) 2장 참조. `./run.sh`가 알아서 처리한다.
 
 - 최초 접속 시 브리지 토큰을 한 번 묻고 `localStorage`에 저장한다 (토큰 없이 띄운 브리지면 빈칸으로 확인).
 - 구성: 봉별 판정 스트립(위 = 롱, 아래 = 숏 / 초록 진입 · 빨강 차단 · 노랑 미확정 라이브 봉) → 16행 게이트 히트맵(채워진 칸 = 해당 게이트 실패, 밝은 칸 = 주 차단 게이트) → 차단 게이트 히스토그램(클릭 시 표 필터) → 패턴 봉 표(열 클릭 정렬) → 봉 클릭 시 상세 판정(마스크·실패 게이트·지표·지배 입력).
@@ -106,9 +113,14 @@ MCP_BRIDGE_TOKEN=mysecret node scripts/http-bridge.js
 
 ```bash
 # 토큰 없이 터널에 노출 금지 — 토큰은 필수로 생각할 것
-MCP_BRIDGE_TOKEN=$(openssl rand -hex 16) node scripts/http-bridge.js
-# 출력된 토큰을 복사해 둔다 (또는 직접 지정: MCP_BRIDGE_TOKEN=mysecret ...)
+export MCP_BRIDGE_TOKEN=$(openssl rand -hex 16)
+echo "$MCP_BRIDGE_TOKEN"        # ← 이 값을 복사해 둔다
+node scripts/http-bridge.js
 ```
+
+> ⚠️ **브리지는 토큰을 출력하지 않는다** (시작 로그는 host/port/viewer 경로뿐).
+> 그래서 `MCP_BRIDGE_TOKEN=$(openssl rand -hex 16) node ...` 처럼 인라인으로 쓰면
+> 그 값을 **다시는 알 수 없다.** 반드시 위처럼 `export` + `echo`로 확인할 것.
 
 ### 3.2 터널 노출 (2터미널)
 

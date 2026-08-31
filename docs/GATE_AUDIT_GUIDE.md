@@ -88,11 +88,50 @@ curl -s localhost:3001/call \
 ./run.sh
 ```
 
-`run.sh`가 실행 환경을 감지해 알맞은 주소로 바인딩하고 브라우저까지 띄워준다. 직접 띄우려면:
+`run.sh`가 실행 환경을 감지해 알맞은 주소로 바인딩하고 브라우저까지 띄워준다.
+**접속 주소와 토큰을 실행 직후 그대로 출력하므로, 보통은 이것만 쓰면 된다:**
+
+```
+Server is running: http://100.115.92.26:3001/viewer
+Bridge token:      mysecret   (paste this into the viewer's token box)
+```
+
+직접 띄우려면:
 
 ```bash
 MCP_BRIDGE_TOKEN=mysecret node scripts/http-bridge.js
 ```
+
+### 브리지 토큰은 어디서 오나
+
+토큰은 **어디에 저장돼 있는 값이 아니라, 브리지를 띄울 때 환경변수로 직접 정하는 값**이다.
+
+| 실행 방법 | 토큰 | 확인 방법 |
+|---|---|---|
+| `./run.sh` | `mysecret` (기본값) | run.sh가 화면에 출력 |
+| `MCP_BRIDGE_TOKEN=xyz ./run.sh` | `xyz` | 직접 정한 값 |
+| `node scripts/http-bridge.js` | **없음 → 인증 자체가 꺼짐** | 뷰어에서 빈칸으로 connect |
+
+```bash
+# 원하는 토큰으로 실행
+MCP_BRIDGE_TOKEN=my-own-token ./run.sh
+
+# 랜덤 토큰 — 변수에 담아야 값을 볼 수 있다
+export MCP_BRIDGE_TOKEN=$(openssl rand -hex 16)
+echo "$MCP_BRIDGE_TOKEN"        # ← 이 값을 뷰어에 붙여넣는다
+./run.sh
+```
+
+> ⚠️ **토큰을 안 정하면 인증이 통째로 비활성화된다.** `http-bridge.js`의 `authorized()`는
+> `if (!BRIDGE_TOKEN) return true` — 즉 "로그인이 생략"되는 게 아니라 **모든 요청이 무조건 통과**한다.
+> `run.sh`는 항상 기본값 `mysecret`을 넣어주므로 이 상태가 되지 않는다.
+>
+> ⚠️ **브리지는 토큰을 출력하지 않는다.** 시작 로그에는 host/port/viewer 경로만 나온다.
+> 그래서 `MCP_BRIDGE_TOKEN=$(openssl rand -hex 16) node scripts/http-bridge.js` 처럼
+> 인라인으로 쓰면 그 값을 **다시는 알 수 없다.** 반드시 위처럼 변수에 담고 `echo`로 확인할 것.
+>
+> ⚠️ `mysecret`은 이 저장소에 공개된 기본값이다. 터널(ngrok/cloudflared)로 외부에 노출할 때는
+> 반드시 직접 정한 토큰을 쓴다.
 
 브라우저에서 열기:
 
