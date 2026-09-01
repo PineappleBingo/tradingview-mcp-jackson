@@ -33,6 +33,7 @@ th{color:var(--ink2);cursor:pointer;user-select:none;background:var(--bg)}tbody 
 #prompt{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line)}
 #prompt input{flex:1;min-width:240px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:5px 8px;font:inherit}
 #chips{display:flex;gap:6px;flex-wrap:wrap}
+#win{background:var(--panel);color:var(--ink2);border:1px solid var(--line);border-radius:4px;padding:4px 6px;font:inherit}
 #model{background:var(--panel);color:var(--ink2);border:1px solid var(--line);border-radius:4px;padding:4px 6px;font:inherit}#model[hidden]{display:none}
 .chip{display:inline-flex;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:12px;font-size:12px;color:var(--ink2);overflow:hidden}
 .chip button{background:none;border:none;color:inherit;font:inherit;padding:3px 10px;cursor:pointer}
@@ -90,6 +91,10 @@ a{color:var(--accent)}
 <div id="prompt">
   <div id="attached" hidden></div>
   <input id="ask" placeholder="ask about the strategy — e.g. why was the 13:30 short blocked?">
+  <select id="win" title="window for the session snapshot pill">
+    <option value="30">30m</option><option value="60" selected>1h</option>
+    <option value="240">4h</option><option value="1440">today</option>
+  </select>
   <select id="model" title="sonnet reads data and writes prose · opus reasons and reviews code" hidden>
     <option value="sonnet">sonnet</option>
     <option value="opus">opus</option>
@@ -374,9 +379,81 @@ async function blockerHistText() {
 }
 const govInputsFor = (k) => { const v = data && data.verdicts.find((x) => x.blocker === k && x.governingInputs.length); return v ? v.governingInputs.join(' · ') : 'see profile'; };
 
+// Price summary shared by the session snapshot and the price pill.
+async function priceText() {
+  const o = await call('data_get_ohlcv', { summary: true, count: 60 });
+  const q = await call('quote_get', {}).catch(() => null);
+  return [
+    'symbol      : ' + (q ? q.symbol : (data && data.chart ? data.chart.symbol : '?')) + (data && data.chart ? ' · ' + data.chart.resolution + 'm' : ''),
+    'last        : ' + (q ? q.last : '?') + (q && q.volume ? '   (bar vol ' + Math.round(q.volume) + ')' : ''),
+    'last 60 bars: open ' + o.open + ' → close ' + o.close + '  (' + o.change_pct + ')',
+    '              high ' + o.high + ' low ' + o.low + '  range ' + o.range,
+    'avg volume  : ' + o.avg_volume,
+  ].join('\n');
+}
+
+// Session snapshot: never empty. Even with no patterns it reports the window,
+// the price move and which gates are currently failing — which is exactly what
+// explains why nothing fired.
+async function sessionText() {
+  if (!data) return 'no audit data yet — wait for the first poll';
+  const mins = Number($('#win').value) || 60;
+  const vs = data.verdicts;
+  const lastMs = Date.parse(vs[vs.length - 1].iso);
+  const cut = lastMs - mins * 60000;
+  const win = vs.filter((v) => Date.parse(v.iso) >= cut);
+  const pat = win.filter((v) => v.side);
+  const fired = pat.filter((v) => v.fired), blocked = pat.filter((v) => !v.fired && !v.live);
+  const stamp = (v) => v.iso.slice(5, 16).replace('T', ' ');
+  const out = [
+    '=== session snapshot · last ' + (mins >= 1440 ? 'day' : mins >= 60 ? (mins / 60) + 'h' : mins + 'm') + ' ===',
+    'window : ' + (win.length ? stamp(win[0]) + ' → ' + stamp(win[win.length - 1]) + ' UTC' : '(no bars)'),
+    'bars   : ' + win.length + ' of ' + vs.length + ' loaded · ' + pat.length + ' with a pattern',
+  ];
+  try { out.push('', await priceText()); } catch (e) { out.push('price: unavailable (' + e.message + ')'); }
+  out.push('');
+  if (fired.length) out.push('FIRED (' + fired.length + '):', ...fired.map((v) => '  ' + stamp(v) + '  ' + v.side + '  ' + (v.reasonName || '')));
+  if (blocked.length) out.push('BLOCKED (' + blocked.length + '):', ...blocked.map((v) => '  ' + stamp(v) + '  ' + v.side + '  ' + (v.reasonName || '') + '  → ' + (v.blocker || '?')));
+  if (!pat.length) out.push('no pattern bars in this window — the strategy saw no setup to act on.');
+  // current gate state answers "why is nothing firing right now?"
+  const last = vs[vs.length - 1];
+  out.push('', 'latest bar ' + stamp(last) + ' — gates failing now: ' + (last.failedGates.length ? last.failedGates.join(', ') : 'none'));
+  return out.join('\n');
+}
+
+// Levels the strategy drew (line.new/label.new). Degrades loudly: these are
+// invisible to normal data tools, so "nothing" must not look like a silent pass.
+async function levelsText() {
+  const [ln, lb] = await Promise.all([
+    call('data_get_pine_lines', {}).catch((e) => ({ error: e.message })),
+    call('data_get_pine_labels', { max_labels: 30 }).catch((e) => ({ error: e.message })),
+  ]);
+  const out = [];
+  const lines = (ln.studies || []).flatMap((s) => (s.lines || s.levels || []).map((x) => typeof x === 'object' ? (x.price ?? x.y ?? JSON.stringify(x)) : x));
+  const labels = (lb.studies || []).flatMap((s) => (s.labels || []).map((x) => (x.text || '') + (x.price != null ? '  @ ' + x.price : '')));
+  if (lines.length) out.push('price levels (high → low):', ...lines.map((p) => '  ' + p));
+  if (labels.length) out.push('labels:', ...labels.map((s) => '  ' + s));
+  if (!out.length) out.push(
+    'No lines or labels are currently drawn by any study on this chart.',
+    '(checked data_get_pine_lines + data_get_pine_labels — both returned 0 studies)',
+    'If the strategy should be drawing POC/target levels, its drawing inputs may be off',
+    'or its draw conditions are unmet — that is chart state, not a tool failure.');
+  return out.join('\n');
+}
+
+// Screenshot: the tool returns a path; the agent can Read the image itself.
+async function shotText() {
+  const r = await call('capture_screenshot', { region: 'chart' });
+  return 'Chart screenshot saved to:\n  ' + r.file_path + '\n(' + Math.round((r.size_bytes || 0) / 1024) + ' KB · region ' + r.region + ')\nRead this file to see the chart visually.';
+}
+
 const PRESETS = [
+  { id: 'session', label: 'session snapshot', kind: 'js', text: sessionText },
   { id: 'entries', label: 'last 10 entries', kind: 'js', text: lastEntriesText },
   { id: 'blocked', label: 'last 10 blocked', kind: 'js', text: lastBlockedText },
+  { id: 'price', label: 'price context', kind: 'js', text: priceText },
+  { id: 'levels', label: 'levels drawn', kind: 'js', text: levelsText },
+  { id: 'shot', label: 'chart screenshot', kind: 'js', text: shotText },
   { id: 'worst', label: 'worst blocker', kind: 'js', text: blockerHistText,
     onShow: () => { const t = topBlocker(); if (t) { filterBlocker = t[0]; drawHist(); drawTable(); showTab('audit'); } } },
   { id: 'f-analyze', label: 'analyze entries', kind: 'fill',
@@ -387,6 +464,8 @@ const PRESETS = [
     fill: () => { const v = data && selected >= 0 && data.verdicts[selected]; return v ? 'Why did the strategy ' + (v.fired ? 'enter' : 'not enter') + (v.side ? ' ' + v.side : '') + ' at ' + v.iso + '?' : null; } },
   { id: 'f-tune', label: 'tune worst blocker', kind: 'fill', missing: 'no blocked bars in the loaded window',
     fill: () => { const t = topBlocker(); return t ? 'Blocker ' + t[0] + ' stopped ' + t[1] + ' entries in this window (governing inputs: ' + govInputsFor(t[0]) + '). Suggest input changes to reduce blocks without weakening risk control.' : null; } },
+  { id: 'f-why-quiet', label: 'why so quiet?', kind: 'fill',
+    fill: () => 'Using the attached session snapshot: why did nothing fire in this window? Name the gates doing the blocking, whether that is correct behaviour for these market conditions, and what would have to change for a setup to qualify.' },
   { id: 'f-report', label: 'draft session report', kind: 'fill',
     fill: () => 'Write a session report from the attached audit data: what fired, what was blocked and why, notable regime/macro conditions, anything unusual.' },
   { id: 'a-why', label: 'why blocked + code review', kind: 'agent', attach: ['blocked'], model: 'opus',

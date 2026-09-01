@@ -92,10 +92,19 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 ![pill 토글과 컨텍스트 칩](./images/02-pill-and-chip.png)
 *`last 10 blocked`의 이름을 눌러 패널을 연 상태(테두리가 파랗게 강조됨) + `last 10 entries`의 ⊕를 눌러 입력창 위에 `[last 10 entries ×]` 칩이 붙은 상태.*
 
+> ⏱️ **창(window) 드롭다운**은 `session snapshot` pill 전용입니다. 5분봉 기준 30분은 6~7봉뿐이고
+> 패턴은 드물게 발생하므로(예: 5시간에 4개), 30분 창은 대개 "패턴 없음"이 됩니다. 그래서 이 pill은
+> 패턴만 나열하지 않고 **가격 변동과 현재 실패 중인 게이트**를 함께 담습니다 — "왜 조용한가"의 답이 그쪽에 있습니다.
+> 진입 사례를 보려면 **4h** 이상을 권합니다.
+
 > 💡 ⊕는 "가서 가져와라"가 아니라 **데이터 자체를 첨부**합니다. 즉 **화면에서 본 그 데이터**가 그대로 AI에게 전달됩니다.
 
 | pill | 내용 | MCP 도구 |
 |---|---|---|
+| `session snapshot` | **창(30m/1h/4h/today) 단위 세션 요약** — 구간·봉 수·가격 변동·진입/차단 목록 + **현재 실패 중인 게이트**. 패턴이 없어도 비지 않습니다 | 폴링 데이터 + `data_get_ohlcv` + `quote_get` |
+| `price context` | 심볼·현재가·최근 60봉 시가/종가/고가/저가·변동률·평균 거래량 | `data_get_ohlcv` `quote_get` |
+| `levels drawn` | 전략이 그린 가격 레벨·라벨 (POC/타깃 등). 없으면 "그려진 것이 없음"을 명시 | `data_get_pine_lines` `data_get_pine_labels` |
+| `chart screenshot` | 차트 이미지를 저장하고 **경로**를 첨부 (AI가 Read로 직접 봄) | `capture_screenshot` |
 | `last 10 entries` | Strategy Tester의 최근 10개 거래 | `data_get_trades` |
 | `last 10 blocked` | 최근 차단된 진입 10개 + 차단 게이트 + 지배 입력 | 이미 폴링된 데이터 재사용 (요청 0회) |
 | `worst blocker` | 차단자 히스토그램 (누르면 표도 그 게이트로 필터 + Audit 탭으로 이동) | 이미 폴링된 데이터 |
@@ -110,6 +119,7 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 | `✎ verify entries` | 통과한 게이트가 Pine 소스 기준으로 정말 맞는지 검증 | **opus** |
 | `✎ explain this bar` | **선택한 봉**의 진입/차단 이유 (봉을 먼저 클릭해야 함) | sonnet |
 | `✎ tune worst blocker` | 최다 차단 게이트와 그 지배 입력을 넣어 완화안 요청 | sonnet |
+| `✎ why so quiet?` | 세션 스냅샷 기준 — 왜 아무것도 진입하지 않았는지, 어떤 게이트가 막고 있는지 | sonnet |
 | `✎ draft session report` | 첨부 데이터로 세션 리포트 작성 | sonnet |
 
 ### 3-3. 에이전트 pill (원클릭 실행)
@@ -238,5 +248,6 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 
 | 날짜 | 변경 내용 |
 |---|---|
+| 2026-09-01 | pill 추가: `session snapshot`(창 선택 30m/1h/4h/today) · `price context` · `levels drawn` · `chart screenshot`, 그리고 `✎ why so quiet?`. |
 | 2026-08-31 | 실제 동작 스크린샷 5장 추가 (`docs/images/`). 컨테이너에 Google Chrome 152 설치 후 Playwright로 캡처. |
 | 2026-08-31 | 최초 작성. Phase 1(탭·스마트 프롬프트·Edu 모드), Phase 1.5(pill 토글·컨텍스트 칩·자동입력 pill), Phase 2(send to Claude·리포트 저장/열람·모델 선택) 사용법 수록. |

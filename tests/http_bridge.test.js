@@ -107,7 +107,7 @@ test('viewer file is small and fully self-contained', () => {
   // It exists to catch an inlined library or a base64 asset, not to freeze the feature
   // set — the self-containment assertions below are the load-bearing ones. Raise it
   // deliberately per phase; do not bump it just to make a commit pass.
-  assert.ok(statSync(VIEWER).size < 48 * 1024, 'viewer must stay under 48 KB');
+  assert.ok(statSync(VIEWER).size < 56 * 1024, 'viewer must stay under 56 KB');
   const html = readFileSync(VIEWER, 'utf8');
   assert.ok(!/<script[^>]+src=/i.test(html), 'no external scripts');
   assert.ok(!/<link[^>]+href=/i.test(html), 'no external stylesheets');
