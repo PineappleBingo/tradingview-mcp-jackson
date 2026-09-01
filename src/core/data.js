@@ -37,10 +37,15 @@ function buildGraphicsJS(collectionName, mapKey, filter) {
             if (outer) {
               var inner = outer.get('${mapKey}');
               if (inner) {
-                var coll = inner.get(false);
-                if (coll && coll._primitivesDataById && coll._primitivesDataById.size > 0) {
-                  coll._primitivesDataById.forEach(function(v, id) { items.push({id: id, raw: v}); });
-                }
+                // The inner Map is keyed by a boolean layer flag. It was hardcoded to
+                // false, which reads an empty layer — on TradingView Desktop 3.4 the
+                // drawings live under true, so every pine graphics tool returned 0.
+                // Iterate the real keys instead of guessing one.
+                inner.forEach(function(coll) {
+                  if (coll && coll._primitivesDataById && coll._primitivesDataById.size > 0) {
+                    coll._primitivesDataById.forEach(function(v, id) { items.push({id: id, raw: v}); });
+                  }
+                });
               }
             }
           } catch(e) {}

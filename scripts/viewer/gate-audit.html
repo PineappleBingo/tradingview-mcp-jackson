@@ -91,7 +91,7 @@ a{color:var(--accent)}
 <div id="prompt">
   <div id="attached" hidden></div>
   <input id="ask" placeholder="ask about the strategy — e.g. why was the 13:30 short blocked?">
-  <select id="win" title="window for the session snapshot pill">
+  <select id="win" title="global window — used by session snapshot, price context and chart screenshot">
     <option value="30">30m</option><option value="60" selected>1h</option>
     <option value="240">4h</option><option value="1440">today</option>
   </select>
@@ -379,16 +379,27 @@ async function blockerHistText() {
 }
 const govInputsFor = (k) => { const v = data && data.verdicts.find((x) => x.blocker === k && x.governingInputs.length); return v ? v.governingInputs.join(' · ') : 'see profile'; };
 
+// The window select is GLOBAL: session snapshot, price context and chart
+// screenshot all read it. Count-based pills (last 10 …) deliberately ignore it.
+const winMins = () => Number($('#win').value) || 60;
+const winLabel = () => { const m = winMins(); return m >= 1440 ? 'today' : m >= 60 ? (m / 60) + 'h' : m + 'm'; };
+const barsForWindow = () => {
+  const res = Number(data && data.chart && data.chart.resolution) || 5; // minutes per bar
+  return Math.max(10, Math.min(500, Math.ceil(winMins() / res)));
+};
+
 // Price summary shared by the session snapshot and the price pill.
 async function priceText() {
-  const o = await call('data_get_ohlcv', { summary: true, count: 60 });
+  const n = barsForWindow();
+  const o = await call('data_get_ohlcv', { summary: true, count: n });
   const q = await call('quote_get', {}).catch(() => null);
   return [
-    'symbol      : ' + (q ? q.symbol : (data && data.chart ? data.chart.symbol : '?')) + (data && data.chart ? ' · ' + data.chart.resolution + 'm' : ''),
-    'last        : ' + (q ? q.last : '?') + (q && q.volume ? '   (bar vol ' + Math.round(q.volume) + ')' : ''),
-    'last 60 bars: open ' + o.open + ' → close ' + o.close + '  (' + o.change_pct + ')',
-    '              high ' + o.high + ' low ' + o.low + '  range ' + o.range,
-    'avg volume  : ' + o.avg_volume,
+    '=== price · last ' + winLabel() + ' (' + n + ' bars) ===',
+    'symbol   : ' + (q ? q.symbol : (data && data.chart ? data.chart.symbol : '?')) + (data && data.chart ? ' · ' + data.chart.resolution + 'm' : ''),
+    'last     : ' + (q ? q.last : '?') + (q && q.volume ? '   (bar vol ' + Math.round(q.volume) + ')' : ''),
+    'window   : open ' + o.open + ' → close ' + o.close + '  (' + o.change_pct + ')',
+    '           high ' + o.high + ' low ' + o.low + '  range ' + o.range,
+    'avg vol  : ' + o.avg_volume,
   ].join('\n');
 }
 
@@ -397,7 +408,7 @@ async function priceText() {
 // explains why nothing fired.
 async function sessionText() {
   if (!data) return 'no audit data yet — wait for the first poll';
-  const mins = Number($('#win').value) || 60;
+  const mins = winMins();
   const vs = data.verdicts;
   const lastMs = Date.parse(vs[vs.length - 1].iso);
   const cut = lastMs - mins * 60000;
@@ -441,10 +452,79 @@ async function levelsText() {
   return out.join('\n');
 }
 
-// Screenshot: the tool returns a path; the agent can Read the image itself.
+// Screenshot framed to the selected window. TradingView has no offscreen
+// render, so this genuinely moves the live chart — the original range is saved
+// first and restored in a finally block even if a step throws.
+const AUTOSCALE_JS = "(()=>{try{const w=window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;"
+  + "const ps=w.model().model().panes()[0].rightPriceScales()[0];"
+  + "ps.setMode({autoScale:true});if(ps.resetScale)ps.resetScale();return 'ok'}catch(e){return 'ERR '+e.message}})()";
 async function shotText() {
-  const r = await call('capture_screenshot', { region: 'chart' });
-  return 'Chart screenshot saved to:\n  ' + r.file_path + '\n(' + Math.round((r.size_bytes || 0) / 1024) + ' KB · region ' + r.region + ')\nRead this file to see the chart visually.';
+  const mins = winMins(), label = winLabel();
+  let saved = null, scaled = 'skipped', moved = false;
+  try {
+    const vr = await call('chart_get_visible_range', {}).catch(() => null);
+    saved = vr && vr.visible_range ? vr.visible_range : null;
+    const to = Math.floor(Date.now() / 1000);
+    await call('chart_set_visible_range', { from: to - mins * 60, to });
+    moved = true;
+    // best effort: framing must never break the capture
+    const a = await call('ui_evaluate', { expression: AUTOSCALE_JS }).catch((e) => ({ result: 'ERR ' + e.message }));
+    scaled = String(a && a.result).startsWith('ok') ? 'applied' : 'failed (' + (a && a.result) + ')';
+    const r = await call('capture_screenshot', { region: 'chart' });
+    return [
+      '=== chart screenshot · last ' + label + ' ===',
+      'file      : ' + r.file_path,
+      'size      : ' + Math.round((r.size_bytes || 0) / 1024) + ' KB · region ' + r.region,
+      'framing   : zoomed to the last ' + label + ' · Y auto-scale ' + scaled,
+      'note      : the live chart was moved to frame this and then restored.',
+      '            TradingView clamps the right edge to available data, so any',
+      '            empty margin you had past the last bar is not restored.',
+      'Read this file to see the chart visually.',
+    ].join('\n');
+  } finally {
+    if (moved && saved) await call('chart_set_visible_range', saved).catch(() => {});
+  }
+}
+
+// Strategy settings: values come from data_get_indicator (ids in_0…), the human
+// labels/groups/defaults only from metaInfo — join them on id.
+const META_JS = "(()=>{try{const w=window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;"
+  + "const ds=w.model().model().dataSources();for(const s of ds){const mi=s.metaInfo&&s.metaInfo();if(!mi)continue;"
+  + "const n=mi.description||mi.shortDescription||'';if(!/PineForge|PF 3G/i.test(n))continue;"
+  + "return JSON.stringify((mi.inputs||[]).map(i=>({id:i.id,name:i.name,type:i.type,group:i.group,def:i.defval})))}"
+  + "return '[]'}catch(e){return 'ERR '+e.message}})()";
+async function settingsText() {
+  const st = await call('chart_get_state', {});
+  const study = (st.studies || []).find((s) => /PineForge|PF 3G/i.test(s.name || ''));
+  if (!study) return 'the PF 3G VP strategy is not on this chart';
+  const [ind, metaRaw] = await Promise.all([
+    call('data_get_indicator', { entity_id: study.id || study.entity_id }),
+    call('ui_evaluate', { expression: META_JS }),
+  ]);
+  let meta = [];
+  try { meta = JSON.parse(metaRaw.result); } catch { return 'could not read input labels: ' + metaRaw.result; }
+  if (!Array.isArray(meta) || !meta.length) return 'no input metadata available for this study';
+  const val = new Map((ind.inputs || []).map((i) => [i.id, i.value]));
+  const groups = new Map();
+  let toggles = 0, changed = 0;
+  for (const m of meta) {
+    if (!/^in_/.test(m.id)) continue;             // skip pineId/pineVersion/pineFeatures
+    if (m.type === 'color') continue;             // colors are 19 of 31 diffs and carry no analytical signal
+    const v = val.get(m.id);
+    if (v === undefined) continue;
+    let line = null;
+    if (m.type === 'bool') { line = (v ? 'ON   ' : 'OFF  ') + m.name; toggles++; }
+    else if (String(v) !== String(m.def)) { line = '     ' + m.name + ': ' + v + '   (default ' + m.def + ')'; changed++; }
+    if (!line) continue;
+    const g = m.group || '(ungrouped)';
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(line);
+  }
+  const out = ['=== ' + study.name + ' — settings ===',
+    toggles + ' toggles · ' + changed + ' changed from default · of ' + meta.length + ' inputs',
+    '(non-bool inputs still at their default are omitted)', ''];
+  for (const [g, lines] of groups) { out.push('── ' + g, ...lines, ''); }
+  return out.join('\n');
 }
 
 const PRESETS = [
@@ -454,6 +534,7 @@ const PRESETS = [
   { id: 'price', label: 'price context', kind: 'js', text: priceText },
   { id: 'levels', label: 'levels drawn', kind: 'js', text: levelsText },
   { id: 'shot', label: 'chart screenshot', kind: 'js', text: shotText },
+  { id: 'settings', label: 'strategy settings', kind: 'js', text: settingsText },
   { id: 'worst', label: 'worst blocker', kind: 'js', text: blockerHistText,
     onShow: () => { const t = topBlocker(); if (t) { filterBlocker = t[0]; drawHist(); drawTable(); showTab('audit'); } } },
   { id: 'f-analyze', label: 'analyze entries', kind: 'fill',
