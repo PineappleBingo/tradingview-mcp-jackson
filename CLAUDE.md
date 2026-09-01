@@ -2,6 +2,23 @@
 
 83 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
 
+## Branch Rule — read first
+
+All of the owner's work goes on the **`my-changes`** branch. **Never open a PR from it and
+never merge it into `main`.** `main` is deliberately kept at its upstream state as a pristine
+baseline; merging would contaminate it. Commit and push to `my-changes` only, and do not
+suggest a PR or merge as a next step after committing. If integration ever seems necessary,
+ask first. (Rebasing `my-changes` *onto* an updated `main` is a different operation — still
+confirm before doing it.)
+
+## Environment note
+
+The MCP server connects to `localhost:9222`, so **all 83 tools require TradingView Desktop
+running on the same machine**. In a cloud session (`claude --cloud`) there is no chart and
+every tool fails. To use the web UI with a live chart, prefer `claude --remote-control` (runs
+locally, steered from the browser), or expose the HTTP bridge through a tunnel as described in
+`docs/DEBUG_WORKFLOW_GUIDE.md` §3.
+
 ## Decision Tree — Which Tool When
 
 ### "What's on my chart right now?"
