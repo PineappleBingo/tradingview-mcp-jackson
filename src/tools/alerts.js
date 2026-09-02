@@ -21,6 +21,14 @@ export function registerAlertTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
+  server.tool('alert_toggle', 'Turn an alert on or off (TradingView stop_alerts/restart_alerts). Reversible.', {
+    alert_id: z.union([z.coerce.number(), z.array(z.coerce.number())]).describe('Alert id, or an array of ids (from alert_list)'),
+    on: z.coerce.boolean().describe('true = active, false = paused'),
+  }, async ({ alert_id, on }) => {
+    try { return jsonResult(await core.toggle({ alert_id, on })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
   server.tool('alert_delete', 'Delete all alerts or open context menu for deletion', {
     delete_all: z.coerce.boolean().optional().describe('Delete all alerts'),
   }, async ({ delete_all }) => {

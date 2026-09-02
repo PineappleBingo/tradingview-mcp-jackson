@@ -833,8 +833,20 @@ function alertRow(a) {
   const sw = document.createElement('button');
   sw.className = 'sw' + (a.active ? ' on' : '');
   sw.appendChild(document.createElement('i'));
-  sw.disabled = true; // enabled once the stop/restart payload is captured
-  sw.title = a.active ? 'active — on/off lands with the toggle endpoint' : 'inactive';
+  sw.title = a.active ? 'active — click to pause' : 'paused — click to resume';
+  sw.onclick = async () => {
+    const want = !sw.classList.contains('on');
+    sw.disabled = true;
+    sw.classList.toggle('on', want); // optimistic; reverted below if the call fails
+    try {
+      await call('alert_toggle', { alert_id: a.alert_id, on: want });
+      a.active = want;
+      sw.title = want ? 'active — click to pause' : 'paused — click to resume';
+    } catch (e) {
+      sw.classList.toggle('on', !want);
+      say('alerts', 'could not ' + (want ? 'resume' : 'pause') + ' alert ' + a.alert_id + ': ' + e.message);
+    } finally { sw.disabled = false; }
+  };
   row.appendChild(sw);
 
   const sym = document.createElement('span');

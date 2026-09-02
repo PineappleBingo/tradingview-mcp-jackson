@@ -183,6 +183,51 @@ export async function list({ summary = true } = {}) {
   };
 }
 
+// Wire format captured from TradingView's own requests (see docs/ALERTS_API.md):
+//   POST /<op>   body {"payload":{"alert_ids":[<id>]}}
+// JSON with a nested "payload" wrapper. Content-Type is deliberately left unset — a string
+// body defaults to text/plain, which is a CORS "simple request"; setting application/json
+// triggers a preflight that this origin fails.
+async function alertOp(op, ids) {
+  const result = await evaluateAsync(`
+    fetch('https://pricealerts.tradingview.com/${op}', {
+      method: 'POST', credentials: 'include',
+      body: JSON.stringify({ payload: { alert_ids: ${JSON.stringify(ids)} } })
+    })
+      .then(function(r) { return r.text().then(function(t) {
+        var j = null; try { j = JSON.parse(t); } catch (e) {}
+        return { status: r.status, ok: !!(j && j.s === 'ok'), code: j && j.err && j.err.code, body: t.slice(0, 300) };
+      }); })
+      .catch(function(e) { return { status: 0, ok: false, code: 'fetch_failed', body: String(e).slice(0, 200) }; })
+  `);
+  if (!result || !result.ok) {
+    // Fail loudly. The bug this file is being rewritten to fix was a create() that reported
+    // success without creating anything.
+    throw new Error(`${op} failed` + (result ? ` (${result.code || result.status}): ` + result.body : ''));
+  }
+  return result;
+}
+
+const asIds = (alert_id) => {
+  const ids = (Array.isArray(alert_id) ? alert_id : [alert_id]).map(Number).filter(Number.isFinite);
+  if (!ids.length) throw new Error('alert_id is required (a number, or an array of numbers)');
+  return ids;
+};
+
+// on:false → stop_alerts, on:true → restart_alerts. Reversible, unlike delete.
+export async function toggle({ alert_id, on }) {
+  const ids = asIds(alert_id);
+  await alertOp(on ? 'restart_alerts' : 'stop_alerts', ids);
+  return { success: true, alert_ids: ids, active: !!on, source: 'internal_api' };
+}
+
+// Destructive and irreversible: always by explicit id, never "all" by default.
+export async function remove({ alert_id }) {
+  const ids = asIds(alert_id);
+  await alertOp('delete_alerts', ids);
+  return { success: true, deleted: ids, source: 'internal_api' };
+}
+
 export async function deleteAlerts({ delete_all }) {
   if (delete_all) {
     const result = await evaluate(`
