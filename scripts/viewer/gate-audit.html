@@ -868,6 +868,25 @@ function alertRow(a) {
     if (f === 'expired') b.title = 'expired ' + (a.expiration || '').slice(0, 10);
     row.appendChild(b);
   });
+
+  const del = runBtn('✕', 'delete this alert — cannot be undone', async () => {
+    if (del.dataset.armed !== '1') { // two-step: irreversible, so never a single stray click
+      del.dataset.armed = '1'; del.textContent = 'delete?'; del.title = 'click again to delete permanently';
+      setTimeout(() => { if (del.dataset.armed === '1') { del.dataset.armed = ''; del.textContent = '✕'; } }, 4000);
+      return;
+    }
+    del.disabled = true; del.textContent = '…';
+    try {
+      await call('alert_delete', { alert_id: a.alert_id, confirm: true });
+      row.remove();
+      loadAlerts(); // re-read rather than trust local state
+    } catch (e) {
+      del.disabled = false; del.textContent = '✕'; del.dataset.armed = '';
+      say('alerts', 'could not delete alert ' + a.alert_id + ': ' + e.message);
+    }
+  });
+  del.style.marginTop = '0';
+  row.appendChild(del);
   return row;
 }
 async function loadAlerts() {

@@ -228,21 +228,15 @@ export async function remove({ alert_id }) {
   return { success: true, deleted: ids, source: 'internal_api' };
 }
 
-export async function deleteAlerts({ delete_all }) {
-  if (delete_all) {
-    const result = await evaluate(`
-      (function() {
-        var alertBtn = document.querySelector('[data-name="alerts"]');
-        if (alertBtn) alertBtn.click();
-        var header = document.querySelector('[data-name="alerts"]');
-        if (header) {
-          header.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 100, clientY: 100 }));
-          return { context_menu_opened: true };
-        }
-        return { context_menu_opened: false };
-      })()
-    `);
-    return { success: true, note: 'Alert deletion requires manual confirmation in the context menu.', context_menu_opened: result?.context_menu_opened || false, source: 'dom_fallback' };
+// Replaces the old DOM path, which never deleted anything — it opened a context menu and
+// returned "requires manual confirmation in the context menu".
+export async function deleteAlerts({ alert_id, confirm }) {
+  const ids = asIds(alert_id);
+  if (confirm !== true) {
+    // Deletion is irreversible and the agent shares this tool surface, so the gate lives
+    // here rather than in a prompt. The viewer passes confirm after the user confirms.
+    return { success: true, proposed: true, would_delete: ids,
+      note: 'Nothing was deleted. Re-issue with confirm: true to delete.' };
   }
-  throw new Error('Individual alert deletion not yet supported. Use delete_all: true.');
+  return await remove({ alert_id: ids });
 }

@@ -29,10 +29,12 @@ export function registerAlertTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('alert_delete', 'Delete all alerts or open context menu for deletion', {
-    delete_all: z.coerce.boolean().optional().describe('Delete all alerts'),
-  }, async ({ delete_all }) => {
-    try { return jsonResult(await core.deleteAlerts({ delete_all })); }
+  server.tool('alert_delete',
+    'Delete alerts by id. Irreversible. Without confirm:true it only reports what it WOULD delete.', {
+    alert_id: z.union([z.coerce.number(), z.array(z.coerce.number())]).describe('Alert id, or an array of ids (from alert_list)'),
+    confirm: z.coerce.boolean().optional().describe('Must be true to actually delete'),
+  }, async ({ alert_id, confirm }) => {
+    try { return jsonResult(await core.deleteAlerts({ alert_id, confirm })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 }

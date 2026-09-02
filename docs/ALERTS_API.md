@@ -31,6 +31,10 @@ POST https://pricealerts.tradingview.com/stop_alerts
 body: {"payload":{"alert_ids":[5360101711]}}
 ```
 
+`stop_alerts`, `restart_alerts` and `delete_alerts` all take this identical shape — each
+confirmed by intercepting TradingView's own requests, delete included. Only `create_alert`
+remains uncaptured.
+
 Two things that cost time to discover:
 
 1. **The body is JSON with a nested `payload` wrapper.** Form-encoded bodies
@@ -59,8 +63,15 @@ window.fetch = function (input, init) {
 };
 ```
 
-`create_alert` still needs this treatment. Do **not** brute-force `delete_alerts` — a correct
-guess destroys data.
+`create_alert` still needs this treatment. Never brute-force a write endpoint whose success is
+destructive — capture it instead.
+
+### Confirm gate
+
+`alert_delete` and `alert_create` do nothing without `confirm: true`; they return
+`{ proposed: true, would_delete | would_create }` instead. The gate is at the tool boundary
+rather than in a prompt because the analysis agent runs with the whole `mcp__tradingview`
+server allowlisted and could otherwise call them directly.
 
 ## Reading alerts
 
