@@ -48,7 +48,8 @@ th{color:var(--ink2);cursor:pointer;user-select:none;background:var(--bg)}tbody 
 #console{margin:10px 14px 0;border:1px solid var(--line);border-radius:4px;background:var(--panel);max-height:340px;overflow:auto;padding:8px 10px}
 .msg{margin-bottom:10px}.msg .who{color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
 .runbtn{margin-top:5px;font-size:11px;padding:2px 8px;color:var(--ink2)}.runbtn:hover:not([disabled]){color:var(--ink)}.runbtn[disabled]{opacity:.45;cursor:not-allowed}
-.bar{height:3px;background:var(--line);border-radius:2px;margin:6px 0 2px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent);border-radius:2px;transition:width .4s linear}.bar.over i{width:100%;background:linear-gradient(90deg,var(--line) 0 40%,var(--warn) 50%,var(--line) 60% 100%);background-size:200% 100%;animation:slide 1.4s linear infinite}@keyframes slide{from{background-position:100% 0}to{background-position:-100% 0}}.queued{margin:6px 14px 0;font-size:12px;color:var(--ink2);display:flex;gap:8px;align-items:center}.queued b{color:var(--ink);font-weight:500}
+.bar{height:3px;background:var(--line);border-radius:2px;margin:6px 0 2px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent);border-radius:2px;transition:width .4s linear}.bar.over i{width:100%;background:linear-gradient(90deg,var(--line) 0 40%,var(--warn) 50%,var(--line) 60% 100%);background-size:200% 100%;animation:slide 1.4s linear infinite}@keyframes slide{from{background-position:100% 0}to{background-position:-100% 0}}.queued{margin:6px 14px 0;font-size:12px;color:var(--ink2);display:flex;gap:8px;align-items:center}
+.alsum{color:var(--ink2);font-size:12px;margin-bottom:10px}.alrow{display:flex;gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:4px;margin-bottom:6px;background:var(--panel)}.alrow.dead{opacity:.6}.alrow .sym{font-weight:500;min-width:150px}.alrow .msg{color:var(--ink2);font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.alflag{font-size:10px;text-transform:uppercase;letter-spacing:.04em;border:1px solid var(--line);border-radius:3px;padding:1px 5px;color:var(--ink2)}.alflag.bad{color:var(--crit);border-color:var(--crit)}.alflag.warn{color:var(--warn);border-color:var(--warn)}.sw{width:34px;height:18px;border-radius:9px;border:1px solid var(--line);background:var(--bg);position:relative;cursor:pointer;flex:none;padding:0}.sw i{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--ink2);transition:left .15s,background .15s}.sw.on{border-color:var(--accent)}.sw.on i{left:18px;background:var(--accent)}.sw[disabled]{opacity:.4;cursor:not-allowed}.queued b{color:var(--ink);font-weight:500}
 .msg pre{margin:3px 0 0;white-space:pre-wrap;font-size:12px;color:var(--ink2)}
 .placeholder{color:var(--ink2);border:1px dashed var(--line);border-radius:4px;padding:14px}
 .term{border-bottom:1px dotted transparent}body.edu .term{border-bottom-color:var(--warn);cursor:help}
@@ -86,6 +87,7 @@ a{color:var(--accent)}
 <nav id="tabs">
   <button id="tb-audit" class="on">Audit</button>
   <button id="tb-reports">Reports</button>
+  <button id="tb-alerts">Alerts</button>
   <button id="tb-backtest">Backtest</button>
   <button id="tb-optimize">Optimize</button>
 </nav>
@@ -135,6 +137,15 @@ a{color:var(--accent)}
   <div class="edu-note">A <span class="term" data-term="report">report</span> is a frozen snapshot of one analysis — the verdicts, the numbers and the written explanation — so you can compare today's behaviour against last week's instead of relying on memory.</div>
   <div id="repList"><div class="placeholder">No reports yet. Send a prompt to Claude (or run an agent pill) — finished analyses are saved here.</div></div>
   <div id="repDetail" hidden></div>
+</section>
+</div>
+
+<div id="tab-alerts" hidden>
+<section>
+  <h2>Alerts <button id="alRefresh" class="runbtn" title="re-read alerts from TradingView">refresh</button></h2>
+  <div class="edu-note">A TradingView <span class="term" data-term="alert">alert</span> runs the <b>script version it was created with</b> — editing the indicator afterwards does not update it, and nothing in TradingView's own UI tells you. <b>stale</b> below means the alert is executing older logic than the chart.</div>
+  <div id="alSummary" class="alsum"></div>
+  <div id="alList"><div class="placeholder">Loading alerts…</div></div>
 </section>
 </div>
 
@@ -327,7 +338,7 @@ function render() {
 }
 // ── tabs ──────────────────────────────────────────────────────────────────
 // viewState carries context when a preset sends you to another tab.
-const TABS = ['audit', 'reports', 'backtest', 'optimize'];
+const TABS = ['audit', 'reports', 'alerts', 'backtest', 'optimize'];
 const viewState = { tab: 'audit' };
 function showTab(name, ctx) {
   if (!TABS.includes(name)) name = 'audit';
@@ -342,6 +353,7 @@ function route() {
   const [name, id] = location.hash.slice(1).split('/');
   showTab(name || 'audit');
   if ((name || 'audit') === 'reports') { if (id) openReport(id); else loadReports(); }
+  if ((name || 'audit') === 'alerts') loadAlerts();
 }
 addEventListener('hashchange', route);
 
@@ -806,6 +818,65 @@ async function runPrompt(text, model) {
 }
 $('#askBtn').onclick = () => runPrompt($('#ask').value);
 $('#ask').addEventListener('keydown', (e) => { if (e.key === 'Enter') runPrompt($('#ask').value); });
+
+// ── alerts tab ────────────────────────────────────────────────────────────
+// Reads through the existing POST /call MCP proxy — no bridge endpoint needed.
+// alert_list summarises server-side; the raw rows carry ~200 Pine inputs each.
+const FLAG_STYLE = { expired: 'bad', inactive: 'warn', stale_version: 'warn', expiring_soon: 'warn', never_fired: '' };
+const FLAG_TEXT = {
+  expired: 'expired', inactive: 'off', stale_version: 'stale script', expiring_soon: 'expiring', never_fired: 'never fired',
+};
+function alertRow(a) {
+  const row = document.createElement('div');
+  row.className = 'alrow' + (a.health === 'dead' ? ' dead' : '');
+
+  const sw = document.createElement('button');
+  sw.className = 'sw' + (a.active ? ' on' : '');
+  sw.appendChild(document.createElement('i'));
+  sw.disabled = true; // enabled once the stop/restart payload is captured
+  sw.title = a.active ? 'active — on/off lands with the toggle endpoint' : 'inactive';
+  row.appendChild(sw);
+
+  const sym = document.createElement('span');
+  sym.className = 'sym';
+  sym.textContent = a.symbol.replace(/^COINBASE:/, '') + ' · ' + (a.resolution || '?');
+  row.appendChild(sym);
+
+  const msg = document.createElement('span');
+  msg.className = 'msg';
+  msg.textContent = a.message || '(' + (a.condition_type || 'alert') + ')';
+  msg.title = a.message || '';
+  row.appendChild(msg);
+
+  a.flags.forEach((f) => {
+    const b = document.createElement('span');
+    b.className = 'alflag ' + (FLAG_STYLE[f] || '');
+    b.textContent = FLAG_TEXT[f] || f;
+    if (f === 'stale_version' && a.chart_version) b.title = 'alert runs v' + a.pine_version + ', chart has v' + a.chart_version;
+    if (f === 'expired') b.title = 'expired ' + (a.expiration || '').slice(0, 10);
+    row.appendChild(b);
+  });
+  return row;
+}
+async function loadAlerts() {
+  const L = $('#alList'), S = $('#alSummary');
+  L.innerHTML = '<div class="placeholder">Loading alerts…</div>';
+  let j;
+  try { j = await call('alert_list', {}); }
+  catch (e) { L.innerHTML = ''; L.appendChild(Object.assign(document.createElement('div'), { className: 'placeholder', textContent: 'Could not read alerts: ' + e.message })); return; }
+  const a = j.alerts || [], q = j.summary || {};
+  const bits = [a.length + ' alert' + (a.length === 1 ? '' : 's'), q.active + ' active'];
+  if (q.expired) bits.push(q.expired + ' expired');
+  if (q.stale_version) bits.push(q.stale_version + ' running an outdated script');
+  if (q.expiring_soon) bits.push(q.expiring_soon + ' expiring within 7 days');
+  S.textContent = bits.join(' · ');
+  L.innerHTML = '';
+  if (!a.length) { L.innerHTML = '<div class="placeholder">No alerts on this account.</div>'; return; }
+  // worst first — a dead or stale alert is the reason to open this tab
+  const rank = (x) => x.health === 'dead' ? 0 : (x.health === 'warn' ? 1 : 2);
+  a.slice().sort((x, y) => rank(x) - rank(y)).forEach((x) => L.appendChild(alertRow(x)));
+}
+$('#alRefresh').onclick = loadAlerts;
 
 // ── reports tab ───────────────────────────────────────────────────────────
 const inline = (s) => s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');

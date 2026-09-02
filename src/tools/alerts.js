@@ -12,8 +12,12 @@ export function registerAlertTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('alert_list', 'List active alerts', {}, async () => {
-    try { return jsonResult(await core.list()); }
+  server.tool('alert_list',
+    'List alerts with health flags (expired, expiring_soon, stale_version, never_fired, inactive). '
+    + 'Summarised by default — pass summary:false only if you need the raw Pine inputs, which are ~200 per alert.', {
+    summary: z.coerce.boolean().optional().describe('Default true. false returns raw rows (very large).'),
+  }, async ({ summary }) => {
+    try { return jsonResult(await core.list({ summary: summary !== false })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 

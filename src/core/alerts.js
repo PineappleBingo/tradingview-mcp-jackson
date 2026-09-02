@@ -72,7 +72,73 @@ export async function create({ condition, price, message }) {
   return { success: !!created, price, condition, message: message || '(none)', price_set: !!priceSet, source: 'dom_fallback' };
 }
 
-export async function list() {
+// Pure — no network, so it is unit-testable. Turns the raw REST rows into the question the
+// user actually asks of an alert list: which of these are dead, stale, or about to lapse?
+//
+// stale_version matters more than it looks: a TradingView alert runs the script version it was
+// CREATED with, so an alert made before you edited the indicator keeps executing the old logic
+// forever. Nothing in TradingView's own UI tells you this.
+const SOON_MS = 7 * 24 * 60 * 60 * 1000;
+export function annotate(alerts, { now = Date.now(), chartVersions = {} } = {}) {
+  return (alerts || []).map((a) => {
+    const study = ((a.condition && a.condition.series) || []).find((x) => x && x.type === 'study') || {};
+    const exp = a.expiration ? Date.parse(a.expiration) : NaN;
+    const live = study.pine_id ? chartVersions[study.pine_id] : undefined;
+    const flags = [];
+    if (!a.active) flags.push('inactive');
+    if (Number.isFinite(exp)) {
+      if (exp < now) flags.push('expired');
+      else if (exp - now < SOON_MS) flags.push('expiring_soon');
+    }
+    if (!a.last_fired) flags.push('never_fired');
+    if (live && study.pine_version && parseFloat(study.pine_version) < parseFloat(live)) flags.push('stale_version');
+    return {
+      alert_id: a.alert_id, symbol: a.symbol, type: a.type, resolution: a.resolution,
+      active: a.active, message: (a.message || '').slice(0, 120),
+      created: a.created, expiration: a.expiration, last_fired: a.last_fired,
+      condition_type: a.condition && a.condition.type,
+      ...(study.pine_id ? { pine_id: study.pine_id, pine_version: study.pine_version } : {}),
+      ...(live ? { chart_version: live } : {}),
+      flags,
+      health: flags.includes('expired') ? 'dead'
+        : (flags.some((f) => f === 'stale_version' || f === 'expiring_soon' || f === 'inactive') ? 'warn' : 'ok'),
+    };
+  });
+}
+
+// pine_id → the version currently loaded on the chart, so annotate() can spot a stale alert.
+// Same dataSources()/metaInfo() walk as src/core/data.js.
+async function chartScriptVersions() {
+  try {
+    return await evaluate(`
+      (function() {
+        try {
+          var chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
+          var sources = chart.model().model().dataSources();
+          var out = {};
+          for (var i = 0; i < sources.length; i++) {
+            var s = sources[i];
+            if (!s.metaInfo) continue;
+            try {
+              var mi = s.metaInfo() || {};
+              // scriptIdPart is exactly the alert's pine_id ("USER;<hash>"); the script's own
+              // version lives on mi.pine.version. NOT mi.version — that is the metainfo
+              // schema version (101), which would compare as newer than every alert.
+              var pid = mi.scriptIdPart;
+              var ver = mi.pine && mi.pine.version;
+              if (pid && ver) out[pid] = String(ver);
+            } catch (e) {}
+          }
+          return out;
+        } catch (e) { return {}; }
+      })()
+    `) || {};
+  } catch { return {}; }
+}
+
+// summary defaults ON. The raw rows embed ~200 Pine inputs per alert — 4 alerts came to roughly
+// 15k tokens, which is a context hazard for any agent that calls this. Summary is ~200 bytes each.
+export async function list({ summary = true } = {}) {
   // Use pricealerts REST API — returns structured data with alert_id, symbol, price, conditions
   const result = await evaluateAsync(`
     fetch('https://pricealerts.tradingview.com/list_alerts', { credentials: 'include' })
@@ -100,7 +166,21 @@ export async function list() {
       })
       .catch(function(e) { return { alerts: [], error: e.message }; })
   `);
-  return { success: true, alert_count: result?.alerts?.length || 0, source: 'internal_api', alerts: result?.alerts || [], error: result?.error };
+  const raw = result?.alerts || [];
+  if (!summary) {
+    return { success: true, alert_count: raw.length, source: 'internal_api', alerts: raw, error: result?.error };
+  }
+  const alerts = annotate(raw, { chartVersions: await chartScriptVersions() });
+  const tally = (f) => alerts.filter((a) => a.flags.includes(f)).length;
+  return {
+    success: true, alert_count: alerts.length, source: 'internal_api',
+    summary: {
+      active: alerts.filter((a) => a.active).length,
+      expired: tally('expired'), expiring_soon: tally('expiring_soon'),
+      stale_version: tally('stale_version'), never_fired: tally('never_fired'),
+    },
+    alerts, error: result?.error,
+  };
 }
 
 export async function deleteAlerts({ delete_all }) {
