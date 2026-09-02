@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fake `claude` for bridge tests: pretend to think briefly, then emit a small
 # markdown report. Keeps /agent tests hermetic — no real model, no cost.
-sleep 1
+sleep "${FAKE_CLAUDE_SLEEP:-1}"
 echo "# Fake Analysis"
 echo
 echo "This is the summary paragraph produced by the fake claude shim."

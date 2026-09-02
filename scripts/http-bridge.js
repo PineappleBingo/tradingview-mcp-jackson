@@ -17,6 +17,7 @@
  *   POST /agent   → { prompt } → { id }; runs `claude -p` on this host (opt-in via
  *                   MCP_BRIDGE_ALLOW_AGENT=1 — NEVER behind a tunnel); one at a time
  *   GET  /agent/status → { busy, state, elapsedMs, reportId?, error? }
+ *   POST /agent/cancel → SIGTERMs the running child; its state becomes 'cancelled'
  *   GET  /reports[/:id], DELETE /reports/:id → saved analysis reports (reports/*.json)
  *
  * Env:
@@ -177,12 +178,29 @@ function startAgent(prompt, title, context, model) {
   let out = '', err = '';
   child.stdout.on('data', (d) => { out += d; });
   child.stderr.on('data', (d) => { err += d; });
-  const killer = setTimeout(() => { try { child.kill('SIGTERM'); } catch {} setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 5000).unref(); }, AGENT_TIMEOUT_MS);
+  // A killed run exits non-zero, which the handler below would otherwise report as a
+  // crash with whatever stderr happens to hold. Record WHY we killed it so a user
+  // cancel and a timeout stay distinguishable from a genuine failure.
+  let halted = '';
+  const halt = (why) => {
+    halted = why;
+    try { child.kill('SIGTERM'); } catch {}
+    setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 5000).unref();
+  };
+  const killer = setTimeout(() => halt('timeout'), AGENT_TIMEOUT_MS);
+  agentRun.cancel = () => halt('cancelled'); // the only handle on the child; see POST /agent/cancel
   child.on('error', (e) => { clearTimeout(killer); agentRun = { ...agentRun, state: 'error', error: 'claude CLI not runnable: ' + e.message }; });
   child.on('exit', (code) => {
     clearTimeout(killer);
     if (agentRun?.id !== id) return;
     const elapsedMs = Date.now() - agentRun.startedAt;
+    if (halted) {
+      agentRun = halted === 'cancelled'
+        ? { ...agentRun, state: 'cancelled' }
+        : { ...agentRun, state: 'error', error: 'timed out after ' + Math.round(AGENT_TIMEOUT_MS / 1000) + 's' };
+      console.log(`[bridge] agent run ${id} ${halted}`);
+      return;
+    }
     if (code !== 0 || !out.trim()) {
       agentRun = { ...agentRun, state: 'error', error: (err || out || 'claude exited ' + code).trim().slice(-800) };
       console.error(`[bridge] agent run ${id} failed (exit ${code})`);
@@ -259,8 +277,14 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (pathname === '/agent' || pathname === '/agent/status') {
+  if (pathname === '/agent' || pathname === '/agent/status' || pathname === '/agent/cancel') {
     if (!ALLOW_AGENT) { writeJson(res, 404, { error: 'agent endpoint disabled — set MCP_BRIDGE_ALLOW_AGENT=1 (local use only, never behind a tunnel)' }); return; }
+    if (req.method === 'POST' && pathname === '/agent/cancel') {
+      if (!agentRun || agentRun.state !== 'running') { writeJson(res, 409, { error: 'no run in progress', state: agentRun?.state ?? 'idle' }); return; }
+      agentRun.cancel();
+      writeJson(res, 200, { ok: true, id: agentRun.id });
+      return;
+    }
     if (req.method === 'GET' && pathname === '/agent/status') {
       writeJson(res, 200, agentRun
         ? { busy: agentRun.state === 'running', id: agentRun.id, state: agentRun.state, model: agentRun.model, elapsedMs: Date.now() - agentRun.startedAt, reportId: agentRun.reportId, error: agentRun.error }
@@ -348,7 +372,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  writeJson(res, 404, { error: 'Not found. Endpoints: GET /viewer, GET /health, GET /tools, POST /call, POST /agent, GET /agent/status, GET|DELETE /reports[/:id]' });
+  writeJson(res, 404, { error: 'Not found. Endpoints: GET /viewer, GET /health, GET /tools, POST /call, POST /agent, POST /agent/cancel, GET /agent/status, GET|DELETE /reports[/:id]' });
 });
 
 server.listen(BRIDGE_PORT, BRIDGE_HOST, () => {

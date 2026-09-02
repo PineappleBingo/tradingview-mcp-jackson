@@ -47,6 +47,7 @@ th{color:var(--ink2);cursor:pointer;user-select:none;background:var(--bg)}tbody 
 .att .chip-x{background:none;border:none;color:var(--ink2);padding:0 6px;font:inherit;cursor:pointer}.att .chip-x:hover{color:var(--crit)}
 #console{margin:10px 14px 0;border:1px solid var(--line);border-radius:4px;background:var(--panel);max-height:340px;overflow:auto;padding:8px 10px}
 .msg{margin-bottom:10px}.msg .who{color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.runbtn{margin-top:5px;font-size:11px;padding:2px 8px;color:var(--ink2)}.runbtn:hover:not([disabled]){color:var(--ink)}.runbtn[disabled]{opacity:.45;cursor:not-allowed}
 .msg pre{margin:3px 0 0;white-space:pre-wrap;font-size:12px;color:var(--ink2)}
 .placeholder{color:var(--ink2);border:1px dashed var(--line);border-radius:4px;padding:14px}
 .term{border-bottom:1px dotted transparent}body.edu .term{border-bottom-color:var(--warn);cursor:help}
@@ -636,10 +637,33 @@ function setBusy(b) {
   document.querySelectorAll('.agent-pill').forEach((x) => { x.disabled = b || !agentOn; });
 }
 let runModel = '';
+// The composed payload of the run in flight. Sending clears the input box and the
+// attached chips, so without this a failed run leaves nothing to retry with — the
+// user would have to retype the prompt and re-attach every chip.
+let lastRun = null;
+function runBtn(label, title, fn) {
+  const b = document.createElement('button');
+  b.className = 'runbtn'; b.textContent = label; b.title = title; b.onclick = fn;
+  return b;
+}
+const clearBtns = (pre) => pre.closest('.msg').querySelectorAll('.runbtn').forEach((b) => b.remove());
+function addRetry(pre) {
+  if (!lastRun) return;
+  pre.closest('.msg').appendChild(runBtn('↻ retry', 'run this prompt again', () => {
+    clearBtns(pre);
+    postRun(lastRun);
+  }));
+}
 function beginRun(elapsedMs, model) {
   runStart = Date.now() - (elapsedMs || 0);
   runModel = model || '';
   runLine = say('claude' + (runModel ? ' · ' + runModel : ''), 'running… 0:00');
+  const stop = runBtn('✕ stop', 'cancel this run', async () => {
+    stop.disabled = true; stop.textContent = '✕ stopping…';
+    try { await fetch('/agent/cancel', { method: 'POST', headers: auth() }); } catch {}
+    pollStatus(false); // don't wait out the 3s tick
+  });
+  runLine.closest('.msg').appendChild(stop);
   setBusy(true);
   runTimer = setInterval(() => {
     const s = Math.floor((Date.now() - runStart) / 1000);
@@ -653,6 +677,7 @@ async function pollStatus(reattach) {
   if (reattach) { if (j.state === 'running' && !runLine) beginRun(j.elapsedMs, j.model); return; }
   if (j.state === 'running' || !runLine) return;
   clearInterval(runTimer); clearInterval(statusTimer); setBusy(false);
+  clearBtns(runLine); // drop the stop button; the run is over either way
   if (j.state === 'done' && j.reportId) {
     try {
       const r = await (await fetch('/reports/' + j.reportId, { headers: auth() })).json();
@@ -662,9 +687,24 @@ async function pollStatus(reattach) {
       // a run can finish while the Reports tab is open — refresh it in place
       if (viewState.tab === 'reports' && !location.hash.includes('/')) loadReports();
     } catch (e) { runLine.textContent = 'done, but failed to load the report: ' + e.message; }
-  } else if (j.state === 'error') runLine.textContent = 'failed: ' + (j.error || 'unknown error');
-  else runLine.textContent = 'run state lost (bridge restarted?)';
+  } else if (j.state === 'error') { runLine.textContent = 'failed: ' + (j.error || 'unknown error'); addRetry(runLine); }
+  else if (j.state === 'cancelled') { runLine.textContent = 'cancelled'; addRetry(runLine); }
+  else { runLine.textContent = 'run state lost (bridge restarted?)'; addRetry(runLine); }
   runLine = null;
+}
+// Single path to POST /agent, shared by a fresh send and by ↻ retry — so a retry
+// resends the exact composed prompt and context, not whatever the inputs hold now.
+async function postRun(payload) {
+  if (runLine) return say('claude', 'a run is already in progress — wait for it to finish');
+  lastRun = payload;
+  try {
+    const res = await fetch('/agent', { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth() },
+      body: JSON.stringify(payload) });
+    const j = await res.json().catch(() => ({}));
+    if (res.status === 409) return say('claude', 'a run is already in progress — wait for it to finish');
+    if (!res.ok) return addRetry(say('claude', 'failed to start: ' + (j.error || ('HTTP ' + res.status))));
+    beginRun(0, j.model || payload.model);
+  } catch (e) { addRetry(say('claude', 'failed to start: ' + e.message)); }
 }
 async function runPrompt(text, model) {
   const t = text.trim();
@@ -675,15 +715,9 @@ async function runPrompt(text, model) {
   attached.forEach((v) => { cmd += '\n\n### context: ' + v.label + '\n' + v.text; });
   if (agentOn) {
     if (runLine) return say('claude', 'a run is already in progress — wait for it to finish');
-    try {
-      const res = await fetch('/agent', { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth() },
-        body: JSON.stringify({ prompt: cmd, title: t.slice(0, 60), context: [...attached.values()].map((v) => v.label), model: useModel }) });
-      const j = await res.json().catch(() => ({}));
-      if (res.status === 409) return say('claude', 'a run is already in progress — wait for it to finish');
-      if (!res.ok) return say('claude', 'failed to start: ' + (j.error || ('HTTP ' + res.status)));
-      attached.clear(); renderAttached(); $('#ask').value = '';
-      beginRun(0, j.model || useModel);
-    } catch (e) { say('claude', 'failed to start: ' + e.message); }
+    const payload = { prompt: cmd, title: t.slice(0, 60), context: [...attached.values()].map((v) => v.label), model: useModel };
+    attached.clear(); renderAttached(); $('#ask').value = '';
+    await postRun(payload);
     return;
   }
   let copied = false;

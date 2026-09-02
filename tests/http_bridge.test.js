@@ -102,12 +102,43 @@ test('invalid JSON body → 400; unknown route → 404 listing /viewer', async (
   assert.match((await nf.json()).error, /\/viewer/);
 });
 
+test('agent cancel: POST /agent/cancel → state cancelled, not a bogus error', async (t) => {
+  // 30s shim so the run is reliably still in flight when we cancel it.
+  const base2 = await startAgentBridge(t, { FAKE_CLAUDE_SLEEP: '30' });
+
+  assert.equal((await fetch(base2 + '/agent/cancel', { method: 'POST', headers: AH })).status, 409,
+    'cancel with nothing running → 409');
+
+  const { id } = await (await fetch(base2 + '/agent', { method: 'POST', headers: AH, body: JSON.stringify({ prompt: 'long run' }) })).json();
+  assert.ok(id);
+  let st = await (await fetch(base2 + '/agent/status', { headers: AH })).json();
+  assert.equal(st.state, 'running');
+
+  assert.equal((await fetch(base2 + '/agent/cancel', { method: 'POST', headers: AH })).status, 200);
+
+  for (let i = 0; i < 60; i++) {
+    st = await (await fetch(base2 + '/agent/status', { headers: AH })).json();
+    if (st.state !== 'running') break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  // The killed child exits non-zero; without the halt flag this would surface as
+  // a confusing 'failed: <stderr>' instead of a clean cancellation.
+  assert.equal(st.state, 'cancelled', 'cancelled run reports cancelled: ' + JSON.stringify(st));
+  assert.ok(!st.error, 'cancellation is not an error');
+  assert.equal(st.busy, false);
+
+  // A cancel must free the slot so ↻ retry can start a new run immediately.
+  assert.equal((await fetch(base2 + '/agent', { method: 'POST', headers: AH, body: JSON.stringify({ prompt: 'retry' }) })).status, 200,
+    'slot is free after cancel');
+});
+
 test('viewer file is small and fully self-contained', () => {
   // Ceiling tracks the phased viewer plan (tabs → reports → backtest → optimize).
   // It exists to catch an inlined library or a base64 asset, not to freeze the feature
   // set — the self-containment assertions below are the load-bearing ones. Raise it
   // deliberately per phase; do not bump it just to make a commit pass.
-  assert.ok(statSync(VIEWER).size < 56 * 1024, 'viewer must stay under 56 KB');
+  // 60 KB covers Phase 1.7 (stop/retry controls on a run). Next bump belongs to Phase 3.
+  assert.ok(statSync(VIEWER).size < 60 * 1024, 'viewer must stay under 60 KB');
   const html = readFileSync(VIEWER, 'utf8');
   assert.ok(!/<script[^>]+src=/i.test(html), 'no external scripts');
   assert.ok(!/<link[^>]+href=/i.test(html), 'no external stylesheets');
@@ -124,19 +155,21 @@ test('agent endpoints are 404 while MCP_BRIDGE_ALLOW_AGENT is unset', async () =
   assert.equal((await fetch(base + '/agent/status', { headers: h })).status, 404);
 });
 
-test('agent job: run → 409 while busy → report saved, listed, fetched, deleted', async (t) => {
+// Boots a bridge with the agent enabled and `claude` shimmed to the fake in
+// fixtures/fakebin. Returns its base URL; the process is killed when the test ends.
+async function startAgentBridge(t, extraEnv = {}) {
   const fakebin = path.join(__dirname, 'fixtures', 'fakebin');
-  const repDir = path.join(tmpdir(), 'tv-bridge-reports-' + Date.now());
+  const repDir = path.join(tmpdir(), 'tv-bridge-reports-' + Date.now() + '-' + Math.random().toString(36).slice(2));
   const p2 = spawn(process.execPath, [BRIDGE], {
     env: {
       ...process.env, MCP_BRIDGE_PORT: '0', MCP_BRIDGE_TOKEN: TOKEN, MCP_SERVER_PATH: STUB,
       MCP_BRIDGE_ALLOW_AGENT: '1', MCP_BRIDGE_REPORTS_DIR: repDir,
-      PATH: fakebin + path.delimiter + process.env.PATH,
+      PATH: fakebin + path.delimiter + process.env.PATH, ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   t.after(() => { try { p2.kill('SIGTERM'); } catch {} });
-  const base2 = await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     let out = '';
     const timer = setTimeout(() => reject(new Error('agent bridge did not bind:\n' + out)), 8000);
     const onData = (d) => {
@@ -147,7 +180,12 @@ test('agent job: run → 409 while busy → report saved, listed, fetched, delet
     p2.stdout.on('data', onData); p2.stderr.on('data', onData);
     p2.on('exit', (c) => { clearTimeout(timer); reject(new Error('agent bridge exited ' + c + ':\n' + out)); });
   });
-  const H = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+}
+const AH = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+
+test('agent job: run → 409 while busy → report saved, listed, fetched, deleted', async (t) => {
+  const base2 = await startAgentBridge(t);
+  const H = AH;
 
   assert.equal((await fetch(base2 + '/agent/status')).status, 401, 'agent endpoints stay token-gated');
   const health = await (await fetch(base2 + '/health', { headers: H })).json();
