@@ -1,9 +1,42 @@
 #!/usr/bin/env bash
-# Fake `claude` for bridge tests: pretend to think briefly, then emit a small
-# markdown report. Keeps /agent tests hermetic — no real model, no cost.
-sleep "${FAKE_CLAUDE_SLEEP:-1}"
-echo "# Fake Analysis"
-echo
-echo "This is the summary paragraph produced by the fake claude shim."
-echo
-echo "- bullet one"
+# Fake `claude` for bridge tests: pretend to think briefly, then emit a report.
+# Keeps /agent tests hermetic — no real model, no cost.
+#
+# Speaks stream-json when asked, because that is what the bridge now parses: the
+# session id (which makes resume possible), tool_use events (progress), and a
+# terminal result event carrying the final text.
+#
+#   FAKE_CLAUDE_SLEEP  seconds to stall before answering (default 1)
+#   FAKE_CLAUDE_SID    session id to report (default fake-session-1)
+
+SLEEP="${FAKE_CLAUDE_SLEEP:-1}"
+SID="${FAKE_CLAUDE_SID:-fake-session-1}"
+STREAM=0
+RESUMED=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    stream-json) STREAM=1 ;;
+    --resume) RESUMED=1; [ -n "$2" ] && SID="$2" ;;
+  esac
+  shift
+done
+
+# Real claude emits the session id in its very first event, before doing any work —
+# that ordering is what lets a run killed mid-flight still be resumable. Emit it before
+# stalling so the shim exercises the same path.
+if [ "$STREAM" = "1" ]; then
+  printf '{"type":"system","subtype":"init","session_id":"%s","tools":["Read"]}\n' "$SID"
+  printf '{"type":"system","subtype":"thinking_tokens","estimated_tokens":42,"session_id":"%s"}\n' "$SID"
+fi
+
+sleep "$SLEEP"
+
+BODY='# Fake Analysis\n\nThis is the summary paragraph produced by the fake claude shim.\n\n- bullet one'
+[ "$RESUMED" = "1" ] && BODY='# Fake Analysis (continued)\n\nResumed and finished the summary paragraph.\n\n- bullet one'
+
+if [ "$STREAM" = "1" ]; then
+  printf '{"type":"assistant","session_id":"%s","message":{"content":[{"type":"tool_use","name":"mcp__tradingview__strategy_gate_audit","input":{"count":200}}]}}\n' "$SID"
+  printf '{"type":"result","subtype":"success","session_id":"%s","is_error":false,"total_cost_usd":0.01,"result":"%s"}\n' "$SID" "$BODY"
+else
+  printf '%b\n' "$BODY"
+fi

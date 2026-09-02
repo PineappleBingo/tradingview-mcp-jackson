@@ -37,6 +37,23 @@ Ask the user to enable **Diagnostics → "Debug Telemetry Table (MCP)"** in the 
 
 ## Step 3 — Pull the per-bar gate history
 
+### Size the request, and delegate when it is big
+
+`count` drives almost the whole cost of this workflow. Measured on a live 5m chart, the MCP
+round-trip is **~50 ms** but `strategy_gate_audit {count: 200}` returns **~103 KB** (≈26k
+tokens) — so the expense is reading the payload, not fetching it.
+
+- **One bar, or "the last few"** → `count: 20`–`50`, read it directly. Small and fast.
+- **A session or a whole load** → keep `count: 200`, but **delegate the read to a subagent**:
+  have it call the tool and return only a digest of **≤2 KB** — the bars that fired, their
+  masks and blockers, and `summary.blockerHistogram`. Then reason over the digest.
+- **Comparing two timeframes** → one subagent per timeframe. They must run **sequentially**,
+  not in parallel: every call drives the same chart over one CDP connection, and switching
+  timeframe mutates shared state. Two at once read each other's chart.
+
+Rule of thumb: **any single tool result over ~20 KB belongs in a subagent.** Below that the
+delegation costs more than it saves.
+
 **Preferred:** `strategy_gate_audit {count: 200}` — returns already-decoded verdicts per bar
 (`side`, `reason`/`reasonName`, `fired`/`live`, `failedGates`, `sideFailedGates`, `blocker`,
 `blockerCode`, `governingInputs`, `metrics{er, roomPct, reqPct, regime{active,evidence,whipsaw}, macro, volGate, targetRoomAtr}`)

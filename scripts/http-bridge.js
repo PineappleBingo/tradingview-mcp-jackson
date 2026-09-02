@@ -17,7 +17,7 @@
  *   POST /agent   → { prompt } → { id }; runs `claude -p` on this host (opt-in via
  *                   MCP_BRIDGE_ALLOW_AGENT=1 — NEVER behind a tunnel); one at a time
  *   GET  /agent/status → { busy, state, elapsedMs, reportId?, error? }
- *   POST /agent/cancel → SIGTERMs the running child; its state becomes 'cancelled'
+ *   POST /agent/cancel → SIGTERMs the running child; its state becomes 'cancelled'\n *   POST /agent/resume → continues a timed-out run in its own claude session
  *   GET  /reports[/:id], DELETE /reports/:id → saved analysis reports (reports/*.json)
  *
  * Env:
@@ -29,6 +29,9 @@
  *   MCP_SERVER_PATH   default <repo>/src/server.js
  *   MCP_BRIDGE_AGENT_MODEL  default 'sonnet' (allowed: sonnet|opus|haiku). Per-run
  *                     override via the POST /agent body; anything else falls back.
+ *   MCP_BRIDGE_AGENT_TIMEOUT_MS  default 900000 (15 min). A two-timeframe opus audit
+ *                     measured 257s, so 300s left almost no headroom. On timeout the run
+ *                     is kept resumable rather than discarded.
  */
 
 import http from 'node:http';
@@ -46,7 +49,7 @@ const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH ?? path.join(__dirname, '..'
 // Agent runs are prompt-driven code execution on this host: opt-in only, and
 // NEVER enable behind a tunnel. Token-gated on top of the flag.
 const ALLOW_AGENT = process.env.MCP_BRIDGE_ALLOW_AGENT === '1';
-const AGENT_TIMEOUT_MS = parseInt(process.env.MCP_BRIDGE_AGENT_TIMEOUT_MS ?? '300000', 10);
+const AGENT_TIMEOUT_MS = parseInt(process.env.MCP_BRIDGE_AGENT_TIMEOUT_MS ?? '900000', 10);
 const REPORTS_DIR = process.env.MCP_BRIDGE_REPORTS_DIR ?? path.join(__dirname, '..', 'reports');
 const CDP_PROBE_URL = 'http://localhost:9222/json/version';
 const VIEWER_PATH = path.join(__dirname, 'viewer', 'gate-audit.html');
@@ -143,10 +146,18 @@ function writeJson(res, status, body) {
 }
 
 // ── agent job (one at a time, buffered — the viewer polls /agent/status) ─────
-let agentRun = null; // { id, startedAt, state: 'running'|'done'|'error', reportId?, error? }
+// state: 'running' | 'done' | 'error' | 'cancelled' | 'timeout'
+// 'timeout' is deliberately NOT 'error': the child's session survives on disk, so the
+// run is resumable via POST /agent/resume rather than thrown away.
+let agentRun = null;
 const newId = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
 const SAFE_ID = /^[a-z0-9-]+$/;
 const reportPath = (id) => path.join(REPORTS_DIR, id + '.json');
+
+// endedAt freezes the clock. Computing this as `Date.now() - startedAt` unconditionally
+// made a finished run's elapsed keep climbing (a run killed at 300s reported 575s), which
+// reads as "the child never died".
+const elapsedOf = (r) => (r.endedAt ?? Date.now()) - r.startedAt;
 
 function extractTitle(out, prompt) {
   const h = out.match(/^#{1,3} +(.+)$/m);
@@ -166,21 +177,81 @@ const MODELS = ['sonnet', 'opus', 'haiku'];
 const DEFAULT_MODEL = MODELS.includes(process.env.MCP_BRIDGE_AGENT_MODEL) ? process.env.MCP_BRIDGE_AGENT_MODEL : 'sonnet';
 const pickModel = (m) => MODELS.includes(m) ? m : DEFAULT_MODEL;
 
-function startAgent(prompt, title, context, model) {
-  const id = newId();
-  agentRun = { id, startedAt: Date.now(), state: 'running', model };
-  // Pinned argv, no shell. mcp__tradingview allows every tool of that server and
-  // nothing else; never --dangerously-skip-permissions. MCP_BRIDGE_* is stripped
-  // so a run cannot see this bridge's token or recurse into it.
+// Task lets the run delegate a large tool payload to a subagent that returns a digest —
+// the skill decides when that is worth it. A subagent inherits this same allowlist, so
+// this adds instances, not permissions. Never --dangerously-skip-permissions.
+const AGENT_TOOLS = ['mcp__tradingview', 'Read', 'Grep', 'Glob', 'Task'];
+
+// Progress baseline: the median of past runs for this model. A model cannot know how much
+// work remains, so the viewer's bar is elapsed against lived experience — and says so.
+const FALLBACK_MS = { haiku: 30000, sonnet: 60000, opus: 260000 };
+function expectedMsFor(model) {
+  const times = [];
+  try {
+    for (const f of readdirSync(REPORTS_DIR)) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        const r = JSON.parse(readFileSync(path.join(REPORTS_DIR, f), 'utf8'));
+        if (r.model === model && r.elapsedMs > 0) times.push(r.elapsedMs);
+      } catch {}
+    }
+  } catch {}
+  if (!times.length) return FALLBACK_MS[model] ?? 120000;
+  times.sort((a, b) => a - b);
+  return times[Math.floor(times.length / 2)];
+}
+
+const friendlyTool = (name, input) => {
+  const n = String(name || '').replace(/^mcp__tradingview__/, '').replace(/_/g, ' ');
+  if (n === 'Task') return 'delegating to a subagent';
+  const f = input && (input.study_filter || input.symbol || input.region);
+  return f ? n + ' · ' + f : n;
+};
+
+// One stream-json event. Captures the session id (first event carries it — that is what
+// makes resume possible), which tool is running, and a token counter. Together these are
+// what tell a watcher "still working" apart from "hung".
+function consumeEvent(id, j) {
+  if (agentRun?.id !== id) return;
+  if (j.session_id && !agentRun.sessionId) agentRun.sessionId = j.session_id;
+  if (j.type === 'system' && j.subtype === 'thinking_tokens' && typeof j.estimated_tokens === 'number') {
+    agentRun.tokens = j.estimated_tokens;
+  }
+  if (j.type === 'assistant' && Array.isArray(j.message?.content)) {
+    for (const c of j.message.content) {
+      if (c.type !== 'tool_use') continue;
+      agentRun.step = (agentRun.step || 0) + 1;
+      agentRun.stepLabel = friendlyTool(c.name, c.input);
+    }
+  }
+  if (j.type === 'result') {
+    if (typeof j.result === 'string') agentRun.resultText = j.result;
+    agentRun.costUsd = j.total_cost_usd;
+    agentRun.subagents = j.subagent_stats;
+  }
+}
+
+// Shared by a fresh run and by a resume: spawn, parse the stream, settle the run.
+function runClaude(id, args, meta) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('MCP_BRIDGE_')));
-  const child = spawn('claude', ['-p', prompt, '--model', model, '--allowedTools', 'mcp__tradingview', 'Read', 'Grep', 'Glob'],
-    { cwd: path.join(__dirname, '..'), env, stdio: ['ignore', 'pipe', 'pipe'] });
-  let out = '', err = '';
-  child.stdout.on('data', (d) => { out += d; });
+  const child = spawn('claude', args, { cwd: path.join(__dirname, '..'), env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let err = '', buf = '', lastRaw = '';
+  child.stdout.on('data', (d) => {
+    buf += d;
+    lastRaw = (lastRaw + d).slice(-2000); // kept only so a timeout can show what it was doing
+    const lines = buf.split('\n');
+    buf = lines.pop();
+    for (const l of lines) {
+      if (!l.trim()) continue;
+      let j; try { j = JSON.parse(l); } catch { continue; }
+      consumeEvent(id, j);
+    }
+  });
   child.stderr.on('data', (d) => { err += d; });
-  // A killed run exits non-zero, which the handler below would otherwise report as a
-  // crash with whatever stderr happens to hold. Record WHY we killed it so a user
-  // cancel and a timeout stay distinguishable from a genuine failure.
+
+  // A killed run exits non-zero, which the handler below would otherwise report as a crash
+  // with whatever stderr happens to hold. Record WHY we killed it so a user cancel and a
+  // timeout stay distinguishable from a genuine failure.
   let halted = '';
   const halt = (why) => {
     halted = why;
@@ -189,37 +260,81 @@ function startAgent(prompt, title, context, model) {
   };
   const killer = setTimeout(() => halt('timeout'), AGENT_TIMEOUT_MS);
   agentRun.cancel = () => halt('cancelled'); // the only handle on the child; see POST /agent/cancel
-  child.on('error', (e) => { clearTimeout(killer); agentRun = { ...agentRun, state: 'error', error: 'claude CLI not runnable: ' + e.message }; });
+
+  child.on('error', (e) => {
+    clearTimeout(killer);
+    if (agentRun?.id !== id) return;
+    agentRun = { ...agentRun, state: 'error', endedAt: Date.now(), error: 'claude CLI not runnable: ' + e.message };
+  });
   child.on('exit', (code) => {
     clearTimeout(killer);
     if (agentRun?.id !== id) return;
-    const elapsedMs = Date.now() - agentRun.startedAt;
-    if (halted) {
-      agentRun = halted === 'cancelled'
-        ? { ...agentRun, state: 'cancelled' }
-        : { ...agentRun, state: 'error', error: 'timed out after ' + Math.round(AGENT_TIMEOUT_MS / 1000) + 's' };
-      console.log(`[bridge] agent run ${id} ${halted}`);
+    const endedAt = Date.now();
+    const elapsedMs = endedAt - agentRun.startedAt;
+
+    if (halted === 'cancelled') {
+      agentRun = { ...agentRun, state: 'cancelled', endedAt };
+      console.log(`[bridge] agent run ${id} cancelled`);
       return;
     }
-    if (code !== 0 || !out.trim()) {
-      agentRun = { ...agentRun, state: 'error', error: (err || out || 'claude exited ' + code).trim().slice(-800) };
+    if (halted === 'timeout') {
+      // Keep sessionId (resume) and the tail (diagnosis). Discarding both is what made the
+      // previous timeout impossible to tell apart from a hang.
+      agentRun = { ...agentRun, state: 'timeout', endedAt,
+        error: 'timed out after ' + Math.round(AGENT_TIMEOUT_MS / 1000) + 's'
+          + (agentRun.stepLabel ? ' during: ' + agentRun.stepLabel : ''),
+        ...(err.trim() ? { tail: err.trim().slice(-800) } : {}) };
+      console.error(`[bridge] agent run ${id} timed out (resumable: ${!!agentRun.sessionId})`);
+      return;
+    }
+
+    const out = (agentRun.resultText || '').trim();
+    if (code !== 0 || !out) {
+      agentRun = { ...agentRun, state: 'error', endedAt,
+        error: (err || lastRaw || 'claude exited ' + code).trim().slice(-800) };
       console.error(`[bridge] agent run ${id} failed (exit ${code})`);
       return;
     }
     const report = {
       id, createdAt: new Date(agentRun.startedAt).toISOString(), type: 'analysis',
-      title: title || extractTitle(out, prompt), prompt, context: context || [],
-      summary: extractSummary(out), body_md: out.trim(), elapsedMs, model,
+      title: meta.title || extractTitle(out, meta.prompt), prompt: meta.prompt, context: meta.context || [],
+      summary: extractSummary(out), body_md: out, elapsedMs, model: meta.model,
+      ...(meta.resumedFrom ? { resumedFrom: meta.resumedFrom } : {}),
+      ...(agentRun.costUsd ? { costUsd: agentRun.costUsd } : {}),
     };
     try {
       mkdirSync(REPORTS_DIR, { recursive: true });
       writeFileSync(reportPath(id), JSON.stringify(report, null, 2));
-      agentRun = { ...agentRun, state: 'done', reportId: id };
+      agentRun = { ...agentRun, state: 'done', endedAt, reportId: id };
       console.log(`[bridge] agent run ${id} done in ${Math.round(elapsedMs / 1000)}s → reports/${id}.json`);
     } catch (e) {
-      agentRun = { ...agentRun, state: 'error', error: 'report write failed: ' + e.message };
+      agentRun = { ...agentRun, state: 'error', endedAt, error: 'report write failed: ' + e.message };
     }
   });
+}
+
+const STREAM_ARGS = ['--output-format', 'stream-json', '--verbose'];
+
+function startAgent(prompt, title, context, model) {
+  const id = newId();
+  agentRun = { id, startedAt: Date.now(), state: 'running', model, step: 0, tokens: 0,
+    expectedMs: expectedMsFor(model), title, prompt, context };
+  runClaude(id, ['-p', prompt, '--model', model, '--allowedTools', ...AGENT_TOOLS, ...STREAM_ARGS],
+    { title, prompt, context, model });
+  return id;
+}
+
+// Continue a timed-out run in its own session rather than starting over. Resume is
+// turn-granular: it picks up from the last completed turn on disk, not the exact instant
+// the child was killed.
+function resumeAgent(prev) {
+  const id = newId();
+  agentRun = { id, startedAt: Date.now(), state: 'running', model: prev.model, step: 0, tokens: 0,
+    expectedMs: expectedMsFor(prev.model), sessionId: prev.sessionId, resumedFrom: prev.id,
+    title: prev.title, prompt: prev.prompt, context: prev.context };
+  runClaude(id, ['-p', 'Continue where you left off and produce the final report.',
+    '--resume', prev.sessionId, '--model', prev.model, '--allowedTools', ...AGENT_TOOLS, ...STREAM_ARGS],
+    { title: prev.title, prompt: prev.prompt, context: prev.context, model: prev.model, resumedFrom: prev.id });
   return id;
 }
 
@@ -277,8 +392,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (pathname === '/agent' || pathname === '/agent/status' || pathname === '/agent/cancel') {
+  if (pathname === '/agent' || pathname === '/agent/status' || pathname === '/agent/cancel' || pathname === '/agent/resume') {
     if (!ALLOW_AGENT) { writeJson(res, 404, { error: 'agent endpoint disabled — set MCP_BRIDGE_ALLOW_AGENT=1 (local use only, never behind a tunnel)' }); return; }
+    if (req.method === 'POST' && pathname === '/agent/resume') {
+      if (!agentRun || agentRun.state !== 'timeout') { writeJson(res, 409, { error: 'no timed-out run to continue', state: agentRun?.state ?? 'idle' }); return; }
+      if (!agentRun.sessionId) { writeJson(res, 409, { error: 'run has no session id — it died before the session opened; use retry' }); return; }
+      const prev = agentRun; // resumeAgent reassigns the global; capture before calling
+      writeJson(res, 200, { id: resumeAgent(prev), model: prev.model, resumedFrom: prev.id });
+      return;
+    }
     if (req.method === 'POST' && pathname === '/agent/cancel') {
       if (!agentRun || agentRun.state !== 'running') { writeJson(res, 409, { error: 'no run in progress', state: agentRun?.state ?? 'idle' }); return; }
       agentRun.cancel();
@@ -287,7 +409,13 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && pathname === '/agent/status') {
       writeJson(res, 200, agentRun
-        ? { busy: agentRun.state === 'running', id: agentRun.id, state: agentRun.state, model: agentRun.model, elapsedMs: Date.now() - agentRun.startedAt, reportId: agentRun.reportId, error: agentRun.error }
+        ? {
+            busy: agentRun.state === 'running', id: agentRun.id, state: agentRun.state,
+            model: agentRun.model, elapsedMs: elapsedOf(agentRun), expectedMs: agentRun.expectedMs,
+            step: agentRun.step || 0, stepLabel: agentRun.stepLabel, tokens: agentRun.tokens || 0,
+            resumable: agentRun.state === 'timeout' && !!agentRun.sessionId,
+            reportId: agentRun.reportId, error: agentRun.error, tail: agentRun.tail,
+          }
         : { busy: false, state: 'idle' });
       return;
     }
@@ -372,7 +500,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  writeJson(res, 404, { error: 'Not found. Endpoints: GET /viewer, GET /health, GET /tools, POST /call, POST /agent, POST /agent/cancel, GET /agent/status, GET|DELETE /reports[/:id]' });
+  writeJson(res, 404, { error: 'Not found. Endpoints: GET /viewer, GET /health, GET /tools, POST /call, POST /agent, POST /agent/cancel, POST /agent/resume, GET /agent/status, GET|DELETE /reports[/:id]' });
 });
 
 server.listen(BRIDGE_PORT, BRIDGE_HOST, () => {

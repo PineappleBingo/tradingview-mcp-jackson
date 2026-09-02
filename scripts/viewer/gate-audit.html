@@ -48,6 +48,7 @@ th{color:var(--ink2);cursor:pointer;user-select:none;background:var(--bg)}tbody 
 #console{margin:10px 14px 0;border:1px solid var(--line);border-radius:4px;background:var(--panel);max-height:340px;overflow:auto;padding:8px 10px}
 .msg{margin-bottom:10px}.msg .who{color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
 .runbtn{margin-top:5px;font-size:11px;padding:2px 8px;color:var(--ink2)}.runbtn:hover:not([disabled]){color:var(--ink)}.runbtn[disabled]{opacity:.45;cursor:not-allowed}
+.bar{height:3px;background:var(--line);border-radius:2px;margin:6px 0 2px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent);border-radius:2px;transition:width .4s linear}.bar.over i{width:100%;background:linear-gradient(90deg,var(--line) 0 40%,var(--warn) 50%,var(--line) 60% 100%);background-size:200% 100%;animation:slide 1.4s linear infinite}@keyframes slide{from{background-position:100% 0}to{background-position:-100% 0}}.queued{margin:6px 14px 0;font-size:12px;color:var(--ink2);display:flex;gap:8px;align-items:center}.queued b{color:var(--ink);font-weight:500}
 .msg pre{margin:3px 0 0;white-space:pre-wrap;font-size:12px;color:var(--ink2)}
 .placeholder{color:var(--ink2);border:1px dashed var(--line);border-radius:4px;padding:14px}
 .term{border-bottom:1px dotted transparent}body.edu .term{border-bottom-color:var(--warn);cursor:help}
@@ -103,6 +104,7 @@ a{color:var(--accent)}
   <button id="askBtn">run</button>
   <span id="chips"></span>
 </div>
+<div id="queued" class="queued" hidden></div>
 <div id="console" hidden></div>
 
 <div id="tab-audit">
@@ -633,7 +635,10 @@ async function checkAgent() {
   }
 }
 function setBusy(b) {
-  $('#askBtn').disabled = b;
+  // The send button stays live: a run can last 15 minutes and locking the box that long
+  // loses the thought. A second send queues instead (one slot). The one-click agent pills
+  // stay disabled — they are whole runs, and silently queueing one is surprising.
+  $('#askBtn').textContent = b ? 'queue' : (agentOn ? 'send to Claude' : 'run');
   document.querySelectorAll('.agent-pill').forEach((x) => { x.disabled = b || !agentOn; });
 }
 let runModel = '';
@@ -654,30 +659,66 @@ function addRetry(pre) {
     postRun(lastRun);
   }));
 }
-function beginRun(elapsedMs, model) {
+const mmss = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+let runStatus = {}, runBar = null;
+// A run cannot know how much work is left, so the bar is elapsed against the median of past
+// runs for this model — calibrated expectation, labelled as such. Past 100% it goes
+// indeterminate rather than parking at 99% and pretending.
+function paintProgress() {
+  const el = Date.now() - runStart;
+  const exp = runStatus.expectedMs || 0;
+  const pct = exp ? Math.min(100, Math.round((el / exp) * 100)) : 0;
+  const over = exp && el > exp;
+  let head = 'running… ' + mmss(el);
+  if (exp) head += over ? ' · longer than a typical ' + runModel + ' run (~' + mmss(exp) + ')'
+                        : ' · ~' + pct + '% of a typical ' + runModel + ' run';
+  const bits = [];
+  if (runStatus.stepLabel) bits.push('step ' + (runStatus.step || 1) + ': ' + runStatus.stepLabel);
+  if (runStatus.tokens) bits.push(runStatus.tokens.toLocaleString() + ' thinking tokens');
+  runLine.textContent = head + (bits.length ? '\n' + bits.join(' · ') : '');
+  if (runBar) { runBar.classList.toggle('over', !!over); runBar.firstChild.style.width = (over ? 100 : pct) + '%'; }
+}
+function beginRun(elapsedMs, model, status) {
   runStart = Date.now() - (elapsedMs || 0);
   runModel = model || '';
+  runStatus = status || {};
   runLine = say('claude' + (runModel ? ' · ' + runModel : ''), 'running… 0:00');
+  const msg = runLine.closest('.msg');
+  runBar = document.createElement('div'); runBar.className = 'bar'; runBar.appendChild(document.createElement('i'));
+  msg.appendChild(runBar);
   const stop = runBtn('✕ stop', 'cancel this run', async () => {
     stop.disabled = true; stop.textContent = '✕ stopping…';
     try { await fetch('/agent/cancel', { method: 'POST', headers: auth() }); } catch {}
     pollStatus(false); // don't wait out the 3s tick
   });
-  runLine.closest('.msg').appendChild(stop);
+  msg.appendChild(stop);
   setBusy(true);
-  runTimer = setInterval(() => {
-    const s = Math.floor((Date.now() - runStart) / 1000);
-    runLine.textContent = 'running… ' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
-  }, 1000);
+  paintProgress();
+  runTimer = setInterval(paintProgress, 1000);
   statusTimer = setInterval(() => pollStatus(false), 3000);
+}
+// Offered only when the bridge kept a session id. Resume is turn-granular — it picks up
+// from the last completed turn, not the instant of the kill.
+function addContinue(pre) {
+  pre.closest('.msg').appendChild(runBtn('⏵ continue', 'resume this run in its own session and finish the report', async () => {
+    clearBtns(pre);
+    try {
+      const res = await fetch('/agent/resume', { method: 'POST', headers: auth() });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) return say('claude', 'could not continue: ' + (j.error || ('HTTP ' + res.status)));
+      beginRun(0, j.model || runModel);
+    } catch (e) { say('claude', 'could not continue: ' + e.message); }
+  }));
 }
 async function pollStatus(reattach) {
   let j;
   try { j = await (await fetch('/agent/status', { headers: auth() })).json(); } catch { return; }
-  if (reattach) { if (j.state === 'running' && !runLine) beginRun(j.elapsedMs, j.model); return; }
-  if (j.state === 'running' || !runLine) return;
+  if (reattach) { if (j.state === 'running' && !runLine) beginRun(j.elapsedMs, j.model, j); return; }
+  if (j.state === 'running') { runStatus = j; return; }
+  if (!runLine) return;
   clearInterval(runTimer); clearInterval(statusTimer); setBusy(false);
   clearBtns(runLine); // drop the stop button; the run is over either way
+  if (runBar) { runBar.remove(); runBar = null; }
   if (j.state === 'done' && j.reportId) {
     try {
       const r = await (await fetch('/reports/' + j.reportId, { headers: auth() })).json();
@@ -687,11 +728,41 @@ async function pollStatus(reattach) {
       // a run can finish while the Reports tab is open — refresh it in place
       if (viewState.tab === 'reports' && !location.hash.includes('/')) loadReports();
     } catch (e) { runLine.textContent = 'done, but failed to load the report: ' + e.message; }
+  } else if (j.state === 'timeout') {
+    // Not a failure: the session is on disk, so the work can be continued.
+    runLine.textContent = (j.error || 'timed out') + '\nThe session was kept — continue picks up from the last completed step.';
+    if (j.resumable) addContinue(runLine);
+    addRetry(runLine);
   } else if (j.state === 'error') { runLine.textContent = 'failed: ' + (j.error || 'unknown error'); addRetry(runLine); }
   else if (j.state === 'cancelled') { runLine.textContent = 'cancelled'; addRetry(runLine); }
   else { runLine.textContent = 'run state lost (bridge restarted?)'; addRetry(runLine); }
   runLine = null;
+  drainQueue();
 }
+// One pending slot, never a backlog. Runs stay strictly serial because they all drive the
+// SAME chart over one CDP connection and they mutate it (switching timeframe, moving the
+// visible range to frame a screenshot). Two at once would read each other's chart state and
+// report confidently wrong numbers — so a second prompt waits rather than racing.
+let queued = null;
+function renderQueued() {
+  const q = $('#queued');
+  q.hidden = !queued;
+  if (!queued) return;
+  q.textContent = '';
+  const label = document.createElement('span');
+  label.innerHTML = 'queued next: <b></b>';
+  label.querySelector('b').textContent = (queued.title || queued.prompt).slice(0, 70);
+  q.appendChild(label);
+  const x = runBtn('✕', 'drop the queued prompt', () => { queued = null; renderQueued(); });
+  x.style.marginTop = '0';
+  q.appendChild(x);
+}
+function drainQueue() {
+  if (!queued) return;
+  const next = queued; queued = null; renderQueued();
+  postRun(next);
+}
+
 // Single path to POST /agent, shared by a fresh send and by ↻ retry — so a retry
 // resends the exact composed prompt and context, not whatever the inputs hold now.
 async function postRun(payload) {
@@ -714,9 +785,15 @@ async function runPrompt(text, model) {
   let cmd = '/strategy-gate-debug ' + t;
   attached.forEach((v) => { cmd += '\n\n### context: ' + v.label + '\n' + v.text; });
   if (agentOn) {
-    if (runLine) return say('claude', 'a run is already in progress — wait for it to finish');
     const payload = { prompt: cmd, title: t.slice(0, 60), context: [...attached.values()].map((v) => v.label), model: useModel };
     attached.clear(); renderAttached(); $('#ask').value = '';
+    if (runLine) { // busy — park it; a second queue replaces the first rather than piling up
+      const had = !!queued;
+      queued = payload; renderQueued();
+      say('claude', had ? 'replaced the queued prompt — it runs when the current one finishes'
+                        : 'queued — it runs when the current one finishes');
+      return;
+    }
     await postRun(payload);
     return;
   }

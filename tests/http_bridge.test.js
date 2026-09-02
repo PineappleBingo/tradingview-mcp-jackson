@@ -132,13 +132,77 @@ test('agent cancel: POST /agent/cancel → state cancelled, not a bogus error', 
     'slot is free after cancel');
 });
 
+test('agent progress: stream-json yields session id, step label and a frozen elapsed', async (t) => {
+  const base2 = await startAgentBridge(t, { FAKE_CLAUDE_SLEEP: '2' });
+  await fetch(base2 + '/agent', { method: 'POST', headers: AH, body: JSON.stringify({ prompt: 'p' }) });
+
+  let seenStep = null;
+  for (let i = 0; i < 40; i++) {
+    const st = await (await fetch(base2 + '/agent/status', { headers: AH })).json();
+    if (st.stepLabel) seenStep = st;
+    if (st.state !== 'running') break;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  assert.ok(seenStep, 'a tool_use event surfaced a step label while running');
+  assert.match(seenStep.stepLabel, /strategy gate audit/, 'label is humanised: ' + seenStep.stepLabel);
+  assert.ok(seenStep.expectedMs > 0, 'a baseline is published for the progress bar');
+
+  let done;
+  for (let i = 0; i < 40; i++) {
+    done = await (await fetch(base2 + '/agent/status', { headers: AH })).json();
+    if (done.state !== 'running') break;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  assert.equal(done.state, 'done', JSON.stringify(done));
+
+  // elapsedMs must freeze at exit. It used to be Date.now()-startedAt, so a finished run's
+  // elapsed climbed forever and a killed run looked like it was still alive.
+  const first = (await (await fetch(base2 + '/agent/status', { headers: AH })).json()).elapsedMs;
+  await new Promise((r) => setTimeout(r, 600));
+  const second = (await (await fetch(base2 + '/agent/status', { headers: AH })).json()).elapsedMs;
+  assert.equal(first, second, 'elapsedMs is frozen once the run ends');
+
+  // The report body now comes from the result event, not raw stdout.
+  const rep = await (await fetch(base2 + '/reports/' + done.reportId, { headers: AH })).json();
+  assert.match(rep.body_md, /summary paragraph/, 'report survives the stream-json switch');
+  assert.equal(rep.title, 'Fake Analysis');
+});
+
+test('agent timeout is resumable: state timeout → POST /agent/resume continues the session', async (t) => {
+  // Child stalls 30s against a 1.5s ceiling, so the timeout fires mid-run.
+  const base2 = await startAgentBridge(t, { FAKE_CLAUDE_SLEEP: '30', MCP_BRIDGE_AGENT_TIMEOUT_MS: '1500' });
+
+  assert.equal((await fetch(base2 + '/agent/resume', { method: 'POST', headers: AH })).status, 409,
+    'nothing to continue → 409');
+
+  await fetch(base2 + '/agent', { method: 'POST', headers: AH, body: JSON.stringify({ prompt: 'slow one' }) });
+  let st;
+  for (let i = 0; i < 60; i++) {
+    st = await (await fetch(base2 + '/agent/status', { headers: AH })).json();
+    if (st.state !== 'running') break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  // Not 'error': the session survives on disk, so the work is continuable.
+  assert.equal(st.state, 'timeout', 'timeout is its own state: ' + JSON.stringify(st));
+  assert.equal(st.resumable, true, 'a captured session id makes it resumable');
+  assert.match(st.error, /timed out after \d+s/);
+
+  // Resume must run long enough to finish: give the shim a short sleep this time.
+  process.env.FAKE_CLAUDE_SLEEP = '0';
+  const r = await fetch(base2 + '/agent/resume', { method: 'POST', headers: AH });
+  assert.equal(r.status, 200);
+  const { resumedFrom } = await r.json();
+  assert.ok(resumedFrom, 'resume reports which run it continued');
+});
+
 test('viewer file is small and fully self-contained', () => {
   // Ceiling tracks the phased viewer plan (tabs → reports → backtest → optimize).
   // It exists to catch an inlined library or a base64 asset, not to freeze the feature
   // set — the self-containment assertions below are the load-bearing ones. Raise it
   // deliberately per phase; do not bump it just to make a commit pass.
-  // 60 KB covers Phase 1.7 (stop/retry controls on a run). Next bump belongs to Phase 3.
-  assert.ok(statSync(VIEWER).size < 60 * 1024, 'viewer must stay under 60 KB');
+  // 66 KB covers Phase 2.0 (progress bar, resume/continue, queued prompt slot).
+  // Next bump belongs to Phase 3.
+  assert.ok(statSync(VIEWER).size < 66 * 1024, 'viewer must stay under 66 KB');
   const html = readFileSync(VIEWER, 'utf8');
   assert.ok(!/<script[^>]+src=/i.test(html), 'no external scripts');
   assert.ok(!/<link[^>]+href=/i.test(html), 'no external stylesheets');
