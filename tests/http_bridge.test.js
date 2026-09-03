@@ -202,15 +202,16 @@ test('viewer file is small and fully self-contained', () => {
   // It exists to catch an inlined library or a base64 asset, not to freeze the feature
   // set — the self-containment assertions below are the load-bearing ones. Raise it
   // deliberately per phase; do not bump it just to make a commit pass.
-  // 70 KB covers Phase 2.1 (Alerts tab with health flags and on/off switches).
-  // Next bump belongs to Phase 3.
-  assert.ok(statSync(VIEWER).size < 70 * 1024, 'viewer must stay under 70 KB');
+  // 70 KB covered Phase 2.1 (Alerts tab). 84 KB covers Phase 3 (Backtest tab: configure,
+  // run, RunCard rendering, save). Next bump belongs to Phase 4 (Optimize tab, 100 KB).
+  assert.ok(statSync(VIEWER).size < 84 * 1024, 'viewer must stay under 84 KB');
   const html = readFileSync(VIEWER, 'utf8');
   assert.ok(!/<script[^>]+src=/i.test(html), 'no external scripts');
   assert.ok(!/<link[^>]+href=/i.test(html), 'no external stylesheets');
   assert.ok(!/@import|https?:\/\//i.test(html.replace(/<!--[\s\S]*?-->/g, '')), 'no remote loads');
   assert.ok(html.includes('document.hidden'), 'pauses when hidden');
   assert.ok(html.includes('refresh'), 'supports ?refresh=');
+  assert.ok(html.includes('strategy_run_backtest') && html.includes("type: 'backtest'"), 'Backtest tab runs the tool and saves a backtest report');
 });
 
 // ── agent + reports (Phase 2) ────────────────────────────────────────────────
