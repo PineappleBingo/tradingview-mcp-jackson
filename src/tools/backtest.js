@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { jsonResult } from './_format.js';
 import { runBacktest } from '../core/backtest.js';
+import { normalizeSpace, planSpace, expandGrid, sampleRandom, halvingPlan, resolveLabels, seedFromMeta } from '../core/paramspace.js';
+import { list as listObjectives } from '../core/objectives.js';
+import { loadProfile } from '../core/gateAudit.js';
 
 export function registerBacktestTools(server) {
   server.tool('strategy_run_backtest', 'Run ONE reproducible backtest on the live Strategy Tester and return a RunCard: applies optional input overrides (ids like in_3 from data_get_indicator), waits until the tester settles (signature changed then stable), reads report + trades + equity in one snapshot, normalizes metrics with per-key provenance (tv/computed/both), and validates (IS/OOS split, Monte-Carlo, bootstrap, walk-forward, verdict edge|noise|insufficient). Prefer this over data_get_strategy_results + data_get_trades when you need trustworthy numbers.', {
@@ -22,6 +25,32 @@ export function registerBacktestTools(server) {
       if (settle_timeout_ms) c.settle = { ...(c.settle || {}), timeoutMs: settle_timeout_ms };
       if (initial_capital) c.costs = { ...(c.costs || {}), initialCapital: initial_capital };
       return jsonResult(await runBacktest(c));
+    } catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('strategy_sweep_plan', 'Plan a parameter sweep WITHOUT running it: normalizes a ParamSpace (typed, finite; ≤ 64 evaluations), returns the evaluation count, a time estimate and the first points. Build the space either from explicit params [{id:"in_N", type, values|min/max/step}], or from the profile shortlist (labels) plus the study metaInfo inputs you got from ui_evaluate. The sweep itself runs as a bridge job (POST /sweep) so it survives page reloads and can resume.', {
+    space: z.string().optional().describe('JSON ParamSpace {params:[{id,label,type,values|min,max,step}], sampler:{kind:grid|random|halving,n,seed,maxEvals,earlyStop:{patience}}, objective, splitDate, topK}'),
+    shortlist_labels: z.string().optional().describe('JSON array of profile shortlist labels to include (default: all in profiles/pf3g-vp.json optimize.shortlist)'),
+    meta_inputs: z.string().optional().describe('JSON array of metaInfo inputs [{id,name,type,options,min,max,step,defval}] used to resolve labels to ids and to seed ranges'),
+    profile: z.string().optional().describe('Profile name (default pf3g-vp)'),
+    settle_ms: z.coerce.number().optional().describe('Assumed settle time per run for the estimate (default 20000)'),
+  }, async ({ space, shortlist_labels, meta_inputs, profile, settle_ms }) => {
+    try {
+      let raw = {};
+      if (space) { try { raw = JSON.parse(space); } catch { return jsonResult({ success: false, error: 'space must be valid JSON' }, true); } }
+      if (!raw.params || !raw.params.length) {
+        if (!meta_inputs) return jsonResult({ success: false, error: 'provide space.params or meta_inputs (+ shortlist_labels) to resolve the profile shortlist' }, true);
+        const meta = JSON.parse(meta_inputs);
+        const p = loadProfile(profile);
+        let list = (p.optimize && p.optimize.shortlist) || [];
+        if (shortlist_labels) { const want = JSON.parse(shortlist_labels).map((l) => String(l).toLowerCase()); list = list.filter((x) => want.includes(x.label.toLowerCase())); }
+        raw.params = resolveLabels(list, meta);
+        raw.seeded = seedFromMeta(meta).length;
+      }
+      const sp = normalizeSpace(raw);
+      const plan = planSpace(sp, { settleMs: settle_ms || 20000, paceMs: sp.pace_ms });
+      const points = sp.sampler.kind === 'grid' ? expandGrid(sp) : sp.sampler.kind === 'random' ? sampleRandom(sp) : halvingPlan(sp).stage1;
+      return jsonResult({ success: true, space: sp, plan, points, objectives: listObjectives() });
     } catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 }
