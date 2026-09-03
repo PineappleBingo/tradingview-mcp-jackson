@@ -17,6 +17,18 @@ export const compact = (m) => Object.fromEntries(METRIC_KEYS.map((k) => [k, m &&
 
 const toMs = (t) => (typeof t === 'number' ? (t < 1e12 ? t * 1000 : t) : Date.parse(t));
 
+/** ≤ n points of cumulative P&L (net % when the trades carry pnlPct, else money) for the overlay. */
+export function curveOf(trades, n = 60) {
+  const ts = (trades || []).filter((t) => t && typeof t.pnl === 'number');
+  if (!ts.length) return [];
+  const pct = ts.every((t) => typeof t.pnlPct === 'number');
+  let c = 0; const cum = ts.map((t) => { c += pct ? t.pnlPct : t.pnl; return Math.round(c * 1000) / 1000; });
+  if (cum.length <= n) return cum;
+  const stride = cum.length / n;
+  const out = []; for (let i = 0; i < n; i++) out.push(cum[Math.min(cum.length - 1, Math.floor((i + 1) * stride) - 1)]);
+  return out;
+}
+
 /** One journal-sized result from a RunCard. IS metrics come from the trades before splitDate. */
 export function summarizeRun(card, { index, inputs, objective, splitDate = null, initialCapital = null } = {}) {
   const trades = card.trades || [];
@@ -34,7 +46,7 @@ export function summarizeRun(card, { index, inputs, objective, splitDate = null,
   return {
     index, inputs: inputs || (card.config && card.config.inputs) || {}, configHash: card.config && card.config.configHash,
     metrics: compact(card.metrics), isMetrics, oos,
-    objective: score(objective, isMetrics), settled: !!card.settled, settleMs: card.settleMs ?? null, warnings: card.warnings || [],
+    objective: score(objective, isMetrics), settled: !!card.settled, settleMs: card.settleMs ?? null, warnings: card.warnings || [], curve: curveOf(trades),
     pSharpe: card.validation && card.validation.monteCarlo ? card.validation.monteCarlo.pSharpe : null,
     verdict: card.validation ? card.validation.verdict : null, reportId: card.reportId || null,
   };

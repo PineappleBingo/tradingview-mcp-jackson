@@ -180,10 +180,23 @@ a{color:var(--accent)}
 </div>
 
 <div id="tab-optimize" hidden>
-<section>
-  <h2>Optimize</h2>
-  <div class="placeholder">Parameter <span class="term" data-term="sweep">sweep</span> across input combinations, with equity-vs-baseline overlay and a results matrix. Lands in <b>Phase 4</b>.</div>
-  <div class="edu-note">A sweep re-runs the backtest once per combination of settings. Treat the winner as <b>a direction, not a result</b> — picking the best of many runs on one window is how <span class="term" data-term="overfitting">overfitting</span> happens. Re-check on a date range you did not tune on.</div>
+<section class="op-cfg">
+  <h2>Optimize — parameter <span class="term" data-term="sweep">sweep</span></h2>
+  <div class="edu-note">A sweep re-runs the backtest once per combination of settings. Treat the winner as <b>a direction, not a result</b> — picking the best of many runs on one window is how <span class="term" data-term="overfitting">overfitting</span> happens. The <span class="term" data-term="objective">objective</span> ranks runs, <span class="term" data-term="stability">stability</span> prefers a plateau over a lonely peak, the split date gives an out-of-sample check, and the verdict says whether the sweep found anything at all. Applying a winner writes a <span class="term" data-term="decision log">decision</span> that later runs can confirm or refute.</div>
+  <div id="opParams"></div>
+  <div class="bt-row"><select id="opPick"><option value="">+ add parameter…</option></select><span class="k" id="opAvail"></span></div>
+  <div class="bt-row"><span class="k">objective</span><select id="opObj"></select><span class="k">sampler</span><select id="opSampler"><option value="grid">grid (all combinations)</option><option value="random">random 16</option><option value="halving">halving 16 → top 4 → neighbours</option></select><span class="k">split date</span><input id="opSplit" type="date"><span class="k">capital</span><input id="opCap" type="number" value="10000" style="width:90px"></div>
+  <div class="bt-row"><button id="opRun">Run sweep</button><b id="opEst">runs –</b><span class="k">each run sets inputs on the chart, then reads the Strategy Tester · inputs are restored when the sweep ends</span></div>
+  <div id="opProg" class="bt-row" hidden><span id="opState" class="pill"></span><span class="k" id="opCur"></span><button id="opCancel" class="runbtn">✕ cancel</button></div>
+</section>
+<section id="opRes" hidden>
+  <h2>Sweep results <span id="opVerdict" class="pill"></span> <span id="opReason" class="src"></span></h2>
+  <div class="legend"><span>equity vs baseline — cumulative net %, baseline dashed grey · click a row to plot it</span><b id="opSel"></b></div>
+  <canvas id="opEq"></canvas>
+  <div style="overflow-x:auto"><table id="opTbl"><thead><tr></tr></thead><tbody></tbody></table></div>
+  <div id="opMatrix" style="margin-top:10px"></div>
+  <div class="bt-row"><button id="opApply">Apply selected to chart</button><button id="opOpen">open report ↗</button><span class="k" id="opMsg"></span></div>
+  <div class="edu-note">N runs · one window · one symbol — a direction, not a result. Re-check on a held-out range before changing the live chart.</div>
 </section>
 </div>
 
@@ -369,6 +382,7 @@ function showTab(name, ctx) {
   if (location.hash.slice(1).split('/')[0] !== name) location.hash = name; // keep #reports/<id> intact
   if (name === 'audit' && data) render(); // canvases measure 0 while hidden — redraw on return
   if (name === 'backtest') { btInit(); if (lastCard) btDrawEq(lastCard); }
+  if (name === 'optimize') { opInit(); if (opRep) opDrawEq(); }
 }
 TABS.forEach((t) => { $('#tb-' + t).onclick = () => showTab(t); });
 // hash routes: #audit · #reports · #reports/<id> (report detail, used by "open report ↗")
@@ -577,6 +591,7 @@ const PRESETS = [
   { id: 'shot', label: 'chart screenshot', kind: 'js', text: shotText },
   { id: 'settings', label: 'strategy settings', kind: 'js', text: settingsText },
   { id: 'backtest', label: 'last backtest', kind: 'js', text: async () => lastCard ? lastCard.body_md : 'no backtest run yet — open the Backtest tab and run one' },
+  { id: 'sweep', label: 'last sweep', kind: 'js', text: async () => opRep ? opRep.body_md : 'no sweep yet — open the Optimize tab and run one' },
   { id: 'worst', label: 'worst blocker', kind: 'js', text: blockerHistText,
     onShow: () => { const t = topBlocker(); if (t) { filterBlocker = t[0]; drawHist(); drawTable(); showTab('audit'); } } },
   { id: 'f-analyze', label: 'analyze entries', kind: 'fill',
@@ -595,6 +610,8 @@ const PRESETS = [
     template: 'Explain in detail why each attached blocked entry was blocked. Then fetch the strategy Pine source yourself (pine_get_source) and code-review each gate that blocked: is the block correct per the code, or does it reveal a misapplied input or a bug? Cite line numbers. Start your answer with a 3-5 line summary.' },
   { id: 'a-analyze', label: 'analyse last 10 entries', kind: 'agent', attach: ['entries'], model: 'sonnet',
     template: 'Analyze the attached entries: per entry give pattern, gate metrics and outcome; then summarize which patterns and conditions are earning vs bleeding, and what should change. Start your answer with a 3-5 line summary.' },
+  { id: 'a-debate', label: 'sweep debate', kind: 'agent', attach: ['sweep'], model: 'opus',
+    template: 'Judge the attached sweep. Use two Task subagents for two rounds: BULL argues the selected parameters are real edge; BEAR argues curve-fit, citing stability, the out-of-sample check, the p-value and the trade count. Then, weighing the arguments on their merits and independent of order, rule ADOPT, HOLD (insufficient evidence) or REJECT, and say what one more test would settle it. Start your answer with the ruling in one line.' },
   { id: 'a-review-bt', label: 'review backtest', kind: 'agent', attach: ['backtest'], model: 'sonnet',
     template: 'Review the attached backtest run card as a performance analyst: profitability, consistency, risk and edge quality. Say whether the computed verdict is justified by the p-value, the IS/OOS split and the walk-forward windows, and give three concrete input changes to test next. Start your answer with a 3-5 line summary.' },
 ];
@@ -1110,6 +1127,142 @@ async function btSave() {
 }
 $('#btSave').onclick = btSave;
 
+// ── optimize tab (Phase 4) ────────────────────────────────────────────────
+// The sweep is a bridge job (/sweep): this tab composes the space, shows progress,
+// survives reloads through /sweep/status, and renders the saved sweep report.
+let opShort = null, opRep = null, opSel = null, opPlot = new Set(), opTimer = null, opBusy = false;
+const opRows = new Map(); // id → { p, el }
+const SERIES = ['#3987e5', '#d95926', '#199e70'];
+async function opInit() {
+  if (opShort || opBusy) return; opBusy = true;
+  try {
+    await btInit();
+    const objs = await (await fetch('/sweep/objectives', { headers: auth() })).json().catch(() => ({ objectives: [] }));
+    const so = $('#opObj'); so.innerHTML = '';
+    (objs.objectives || []).forEach((o) => { const op = document.createElement('option'); op.value = o.name; op.textContent = o.name + ' — ' + o.label; op.title = o.desc; if (o.default) op.selected = true; so.appendChild(op); });
+    if (!btMeta) { $('#opAvail').textContent = 'strategy not on chart'; return; }
+    const plan = await call('strategy_sweep_plan', { meta_inputs: JSON.stringify(btMeta.map((m) => ({ id: m.id, name: m.name, type: m.type, options: m.options, min: m.min, max: m.max, step: m.step, defval: m.def, cur: m.cur }))) }).catch((e) => ({ error: e.message }));
+    opShort = plan.space ? plan.space.params : [];
+    const sel = $('#opPick'); sel.innerHTML = '<option value="">+ add parameter…</option>';
+    opShort.forEach((p) => { const o = document.createElement('option'); o.value = p.id; o.textContent = p.label + '  [' + p.values.join(', ') + ']'; sel.appendChild(o); });
+    $('#opAvail').textContent = opShort.length ? opShort.length + ' in the profile shortlist' : ('shortlist unavailable' + (plan.error ? ': ' + plan.error : ''));
+    pollSweep(true);
+  } catch (e) { $('#opAvail').textContent = 'could not prepare: ' + e.message; }
+  finally { opBusy = false; opEstimate(); }
+}
+function opAdd(id) {
+  const p = opShort && opShort.find((x) => x.id === id); if (!p || opRows.has(id)) return;
+  const w = document.createElement('div'); w.className = 'bt-row';
+  const lab = document.createElement('b'); lab.textContent = p.label; w.appendChild(lab);
+  const cur = document.createElement('span'); cur.className = 'k'; cur.textContent = 'now ' + (p.current ?? '?'); w.appendChild(cur);
+  const inp = document.createElement('input'); inp.value = p.values.join(', '); inp.style.minWidth = '260px'; inp.title = 'comma-separated values to try'; inp.oninput = opEstimate; w.appendChild(inp);
+  const x = document.createElement('button'); x.className = 'runbtn'; x.style.marginTop = '0'; x.textContent = '×'; x.onclick = () => { opRows.delete(id); w.remove(); opEstimate(); }; w.appendChild(x);
+  $('#opParams').appendChild(w); opRows.set(id, { p, el: inp }); opEstimate();
+}
+$('#opPick').onchange = (e) => { opAdd(e.target.value); e.target.value = ''; };
+const opVals = (p, el) => el.value.split(',').map((v) => v.trim()).filter(Boolean).map((v) => p.type === 'bool' ? v === 'true' : (p.type === 'int' || p.type === 'decimal') ? Number(v) : v);
+function opSpace() {
+  const params = [];
+  opRows.forEach(({ p, el }, id) => { const values = opVals(p, el); if (values.length) params.push({ id, label: p.label, type: p.type, values }); });
+  return { params, sampler: { kind: $('#opSampler').value }, pace_ms: 1000 };
+}
+function opEstimate() {
+  const sp = opSpace(), grid = sp.params.reduce((a, p) => a * p.values.length, 1);
+  const n = !sp.params.length ? 0 : sp.sampler.kind === 'grid' ? grid : sp.sampler.kind === 'random' ? Math.min(16, grid) : Math.min(64, grid, 16 + 4 * sp.params.length * 2);
+  const per = (lastCard && lastCard.settleMs ? lastCard.settleMs : 20000) + 1000;
+  $('#opEst').textContent = 'runs ' + n + (n ? ' · est ~' + Math.max(1, Math.round(n * per / 60000)) + ' min' : '') + (sp.sampler.kind === 'grid' && grid > 64 ? ' · over the 64-run cap — narrow a range or pick random/halving' : '');
+  $('#opRun').disabled = !n || (sp.sampler.kind === 'grid' && grid > 64);
+}
+$('#opSampler').onchange = opEstimate;
+async function opRun() {
+  const sp = opSpace(); if (!sp.params.length) return;
+  const cap = Number($('#opCap').value) || null;
+  const body = { space: sp, objective: $('#opObj').value, splitDate: $('#opSplit').value ? $('#opSplit').value + 'T00:00:00Z' : null, costs: cap ? { initialCapital: cap } : null,
+    title: 'sweep · ' + sp.params.map((p) => p.label).join(' × ') + ' · ' + $('#opObj').value };
+  try {
+    const res = await fetch('/sweep', { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth() }, body: JSON.stringify(body) });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) { $('#opMsg').textContent = 'could not start: ' + (j.error || ('HTTP ' + res.status)); $('#opRes').hidden = false; return; }
+    opBegin();
+  } catch (e) { $('#opMsg').textContent = 'could not start: ' + e.message; }
+}
+$('#opRun').onclick = opRun;
+$('#opCancel').onclick = async () => { $('#opCancel').disabled = true; try { await fetch('/sweep/cancel', { method: 'POST', headers: auth() }); } catch {} };
+function opBegin() { $('#opProg').hidden = false; $('#opCancel').disabled = false; $('#opRun').disabled = true; clearInterval(opTimer); opTimer = setInterval(() => pollSweep(false), 2000); pollSweep(false); }
+async function pollSweep(reattach) {
+  let j; try { j = await (await fetch('/sweep/status', { headers: auth() })).json(); } catch { return; }
+  if (reattach) { if (j.state === 'running') opBegin(); return; }
+  const st = $('#opState');
+  if (j.state === 'running') {
+    st.className = 'pill'; st.textContent = 'running ' + j.done + '/' + j.total + ' · ' + mmss(j.elapsedMs) + (j.expectedMs ? ' of ~' + mmss(j.expectedMs) : '');
+    $('#opCur').textContent = j.current ? (j.current.index < 0 ? 'baseline' : '#' + j.current.index + ' ' + Object.entries(j.current.inputs).map(([k, v]) => ((btMeta && (btMeta.find((m) => m.id === k) || {}).name) || k) + '=' + v).join(', ')) : 'restoring inputs…';
+    return;
+  }
+  clearInterval(opTimer); opTimer = null; $('#opRun').disabled = false; opEstimate();
+  if (j.state === 'idle') { $('#opProg').hidden = true; return; }
+  st.className = 'pill ' + (j.state === 'done' ? 'ok' : 'bad'); st.textContent = j.state + (j.reason && j.reason !== 'cancelled' ? ' (' + j.reason + ')' : '');
+  $('#opCur').textContent = j.restore ? (j.restore.restored ? 'inputs restored' + (j.restore.verified === false ? ' — but read back DIFFERENT: re-apply ' + JSON.stringify(j.restore.original) : '') : 'INPUTS NOT RESTORED: re-apply ' + JSON.stringify(j.restore.original)) : '';
+  if (j.state === 'done' && j.reportId) { try { opRep = await (await fetch('/reports/' + j.reportId, { headers: auth() })).json(); opRender(); } catch (e) { $('#opMsg').textContent = 'report load failed: ' + e.message; } }
+  else if (j.error) { $('#opRes').hidden = false; $('#opMsg').textContent = 'failed: ' + j.error; }
+}
+function opRender() {
+  const d = opRep.data, s = d.selection || {}; $('#opRes').hidden = false;
+  opSel = s.selectedIndex; opPlot = new Set(s.ranked.slice(0, 3)); if (opSel != null) opPlot.add(opSel);
+  const vp = $('#opVerdict'); vp.textContent = s.verdict || 'n/a'; vp.className = 'pill ' + ({ edge: 'ok', noise: 'warn', insufficient: 'bad' }[s.verdict] || '');
+  $('#opReason').textContent = (s.reasons || []).join(' · ');
+  const selR = opSel != null ? d.results[opSel] : null;
+  $('#opSel').textContent = selR ? 'selected #' + selR.index + ' ' + Object.entries(selR.inputs).map(([k, v]) => (d.labels[k] || k) + '=' + v).join(', ') : 'nothing selected';
+  const P = d.space.params, base = d.baseline || {};
+  const cols = [...P.map((p) => p.label || p.id), 'net %', 'PF', 'max DD %', 'trades', 'objective', 'OOS PF', 'stability', 'Δ base'];
+  const head = $('#opTbl thead tr'); head.innerHTML = ''; cols.forEach((c) => { const th = document.createElement('th'); th.textContent = c; th.style.cursor = 'default'; head.appendChild(th); });
+  const body = $('#opTbl tbody'); body.innerHTML = '';
+  const row = (r, tag) => {
+    const tr = document.createElement('tr'); if (r.index === opSel) tr.className = 'sel';
+    const dB = r.metrics.netProfitPct != null && base.metrics && base.metrics.netProfitPct != null ? r.metrics.netProfitPct - base.metrics.netProfitPct : null;
+    [...P.map((p) => r.inputs[p.id]), fmtN(r.metrics.netProfitPct), fmtN(r.metrics.profitFactor, 3), fmtN(r.metrics.maxDrawdownPct), r.metrics.totalTrades ?? '–', fmtN(r.objective, 4), r.oos ? fmtN(r.oos.profitFactor, 3) : '–', fmtN(s.stability && s.stability[r.index], 4), tag ? '—' : (dB == null ? '–' : (dB >= 0 ? '+' : '') + fmtN(dB))]
+      .forEach((x, i) => { const td = document.createElement('td'); td.textContent = x ?? ''; if (i >= P.length) td.className = 'num'; if (i === P.length + 4 && tag) td.textContent = fmtN(r.objective, 4); tr.appendChild(td); });
+    if (tag) { tr.children[0].textContent = tag + ' ' + tr.children[0].textContent; tr.style.color = 'var(--ink2)'; }
+    if (!r.settled) tr.title = 'unsettled run'; if (!r.settled) tr.style.opacity = .6;
+    tr.onclick = () => { if (tag) return; if (opPlot.has(r.index)) opPlot.delete(r.index); else opPlot.add(r.index); opDrawEq(); };
+    return tr;
+  };
+  s.ranked.forEach((i) => body.appendChild(row(d.results[i])));
+  if (base.metrics) body.appendChild(row({ ...base, index: -1, inputs: d.restore.original }, 'baseline'));
+  const mx = $('#opMatrix'); mx.innerHTML = '';
+  if (d.matrix) {
+    const vals = d.matrix.cells.flat().filter(Boolean).map((c) => c.objective).filter((v) => v != null); const lo = Math.min(...vals), hi = Math.max(...vals);
+    const g = document.createElement('div'); g.style.cssText = 'display:grid;gap:2px;grid-template-columns:max-content repeat(' + d.matrix.cols.length + ',minmax(60px,1fr))';
+    const cell = (t, st) => { const e = document.createElement('div'); e.textContent = t; e.style.cssText = 'padding:4px 6px;text-align:center;font-size:12px;' + (st || ''); return e; };
+    g.appendChild(cell(d.matrix.rowParam + ' \\ ' + d.matrix.colParam, 'color:var(--ink2);text-align:left'));
+    d.matrix.cols.forEach((c) => g.appendChild(cell(c, 'color:var(--ink2)')));
+    d.matrix.rows.forEach((rv, ri) => { g.appendChild(cell(rv, 'color:var(--ink2);text-align:left')); d.matrix.cells[ri].forEach((c) => { const t = c && c.objective != null ? (1 - (c.objective - lo) / ((hi - lo) || 1)) : null; g.appendChild(cell(c ? fmtN(c.netProfitPct) + '%' : '·', t == null ? 'color:var(--muted)' : 'background:rgba(122,162,247,' + (0.08 + 0.55 * t).toFixed(2) + ');color:var(--ink)' + (c.index === opSel ? ';outline:1px solid var(--sel)' : ''))); }); });
+    mx.appendChild(Object.assign(document.createElement('div'), { className: 'legend', textContent: 'sweep matrix — net profit %, shade = objective rank (darker is better) · outline = selected' }));
+    mx.appendChild(g);
+  }
+  $('#opMsg').textContent = d.reason ? 'stopped early: ' + d.reason : '';
+  opDrawEq();
+}
+function opDrawEq() {
+  const d = opRep && opRep.data; if (!d) return;
+  const cv = $('#opEq'), H = 120, ctx = prep(cv, H), W = cv.clientWidth || 600;
+  const series = [...opPlot].map((i, k) => ({ pts: d.results[i].curve || [], color: SERIES[k % SERIES.length], label: '#' + i, sel: i === opSel }));
+  if (d.baseline && d.baseline.curve) series.unshift({ pts: d.baseline.curve, color: col('--ink2'), label: 'baseline', dash: true });
+  const all = series.flatMap((s) => s.pts); if (!all.length) { ctx.fillStyle = col('--ink2'); ctx.fillText('no curve data', 8, 16); return; }
+  const lo = Math.min(0, ...all), hi = Math.max(0, ...all), sp = hi - lo || 1;
+  const y = (v) => H - 6 - (v - lo) / sp * (H - 12);
+  ctx.strokeStyle = col('--line'); ctx.beginPath(); ctx.moveTo(4, y(0)); ctx.lineTo(W - 4, y(0)); ctx.stroke();
+  series.forEach((s) => { if (!s.pts.length) return; const x = (i) => 4 + i * (W - 8) / Math.max(1, s.pts.length - 1); ctx.strokeStyle = s.color; ctx.lineWidth = s.sel ? 2.5 : 1.3; ctx.setLineDash(s.dash ? [4, 3] : []); ctx.beginPath(); s.pts.forEach((v, i) => i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))); ctx.stroke(); ctx.setLineDash([]); ctx.lineWidth = 1; ctx.fillStyle = s.color; ctx.font = '11px ui-monospace,monospace'; ctx.fillText(s.label + ' ' + fmtN(s.pts[s.pts.length - 1]) + '%', Math.min(W - 90, x(s.pts.length - 1) + 4), y(s.pts[s.pts.length - 1]) + 4); });
+}
+$('#opApply').onclick = async () => {
+  if (!opRep || opSel == null) return; const m = $('#opMsg'); m.textContent = 'applying…';
+  try {
+    const res = await fetch('/sweep/apply', { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth() }, body: JSON.stringify({ id: opRep.id, index: opSel }) });
+    const j = await res.json().catch(() => ({})); if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
+    m.innerHTML = 'applied to the chart · decision <a href="#reports/' + j.id + '">' + j.id + '</a> is pending until a later backtest of the same settings resolves it';
+  } catch (e) { m.textContent = 'apply failed: ' + e.message; }
+};
+$('#opOpen').onclick = () => { if (opRep) window.open('/viewer#reports/' + opRep.id, '_blank'); };
+
 // ── edu mode ──────────────────────────────────────────────────────────────
 const GLOSSARY = {
   report: 'A saved snapshot of one analysis, so runs can be compared over time.',
@@ -1123,6 +1276,9 @@ const GLOSSARY = {
   'p-value': 'Share of "no-edge" random rearrangements that look at least as good as the real result. Below 0.05 the result is unlikely to be luck.',
   'walk-forward': 'The trade list cut into consecutive windows; a strategy that only wins in one window is not stable.',
   'in-sample / out-of-sample': 'In-sample is the period you tuned on; out-of-sample is the untouched period after the split date. Only the second one is evidence.',
+  objective: 'The single number a sweep ranks by (smaller is better). multi_metric blends profit, drawdown, profit factor, expectancy, win rate and penalises few trades.',
+  stability: 'Mean objective of the neighbouring settings. A winner whose neighbours are bad is a spike, not a region — the sweep prefers the plateau centre.',
+  'decision log': 'Applying a sweep winner records a pending decision; a later backtest of the same settings over new bars resolves it with what actually happened.',
 };
 let edu = false; try { edu = localStorage.getItem('eduMode') === '1'; } catch {}
 function setModel(m) { const s = $('#model'); if (!s.hidden) { s.value = m; try { localStorage.setItem('agentModel', m); } catch {} } }
