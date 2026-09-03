@@ -23,6 +23,12 @@
  *   GET  /reports[/:id], DELETE /reports/:id → saved analysis reports (reports/*.json)
  *   POST /reports → { type: backtest|sweep|decision, title, summary?, body_md, data? } → { id }
  *                   (Phase 3: the viewer saves RunCards into the SAME report store)
+ *   POST /sweep   → { space, objective?, splitDate?, title?, costs? } → { id, total, expectedMs }
+ *                   runs strategy_run_backtest per parameter point IN-PROCESS, journals to
+ *                   reports/sweeps/<id>.jsonl, restores the inputs, writes a type:'sweep' report.
+ *                   One chart-mutating job at a time: 409 while an agent run OR a sweep is active.
+ *   GET  /sweep/status · POST /sweep/cancel · POST /sweep/resume {id} · POST /sweep/apply {id,index}
+ *   GET  /sweep/objectives → the objective registry (for the viewer's selector)
  *
  * Env:
  *   MCP_BRIDGE_PORT   default 3001
@@ -36,6 +42,8 @@
  *   MCP_BRIDGE_AGENT_TIMEOUT_MS  default 900000 (15 min). A two-timeframe opus audit
  *                     measured 257s, so 300s left almost no headroom. On timeout the run
  *                     is kept resumable rather than discarded.
+ *   MCP_BRIDGE_SWEEP_TIMEOUT_MS  default 3600000 (60 min) for a whole sweep; a timed-out
+ *                     sweep restores the inputs and stays resumable from its journal.
  */
 
 import http from 'node:http';
@@ -44,6 +52,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { createSweepRunner } from './sweep-job.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_PORT = parseInt(process.env.MCP_BRIDGE_PORT ?? '3001', 10);
@@ -55,6 +64,7 @@ const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH ?? path.join(__dirname, '..'
 const ALLOW_AGENT = process.env.MCP_BRIDGE_ALLOW_AGENT === '1';
 const AGENT_TIMEOUT_MS = parseInt(process.env.MCP_BRIDGE_AGENT_TIMEOUT_MS ?? '900000', 10);
 const REPORTS_DIR = process.env.MCP_BRIDGE_REPORTS_DIR ?? path.join(__dirname, '..', 'reports');
+const SWEEP_TIMEOUT_MS = parseInt(process.env.MCP_BRIDGE_SWEEP_TIMEOUT_MS ?? '3600000', 10);
 const CDP_PROBE_URL = 'http://localhost:9222/json/version';
 const VIEWER_PATH = path.join(__dirname, 'viewer', 'gate-audit.html');
 const CDP_DOWN_RE = /CDP connection failed|not running with CDP|ECONNREFUSED|No TradingView chart target|9222/i;
@@ -172,6 +182,11 @@ function saveReport(report) {
   writeFileSync(reportPath(report.id), JSON.stringify(report, null, 2));
   return report.id;
 }
+const readReport = (id) => { try { return JSON.parse(readFileSync(reportPath(id), 'utf8')); } catch { return null; } };
+// The sweep job calls tools in-process (callTool), so its per-run ceiling is its own.
+const sweeps = createSweepRunner({ callTool: (t, p, ms) => callTool(t, p, ms), reportsDir: REPORTS_DIR, saveReport, newId, timeoutMs: SWEEP_TIMEOUT_MS, runTimeoutMs: 120_000, log: (m) => console.log(m) });
+// Agent runs and sweeps both mutate the ONE live chart; never let them overlap.
+const chartBusy = () => ({ agent: !!(agentRun && agentRun.state === 'running'), sweep: sweeps.busy() });
 
 // endedAt freezes the clock. Computing this as `Date.now() - startedAt` unconditionally
 // made a finished run's elapsed keep climbing (a run killed at 300s reported 575s), which
@@ -401,12 +416,12 @@ const server = http.createServer(async (req, res) => {
         cdpOk = cdpRes.ok;
       } catch { cdpOk = false; }
       if (!cdpOk) {
-        writeJson(res, 503, { ok: false, connected: false, agent: ALLOW_AGENT, postReports: true, error: 'TradingView Desktop not running with --remote-debugging-port=9222' });
+        writeJson(res, 503, { ok: false, connected: false, agent: ALLOW_AGENT, postReports: true, sweep: true, error: 'TradingView Desktop not running with --remote-debugging-port=9222' });
         return;
       }
-      writeJson(res, 200, { ok: true, connected: true, agent: ALLOW_AGENT, defaultModel: DEFAULT_MODEL, models: MODELS, postReports: true, server: MCP_SERVER_PATH });
+      writeJson(res, 200, { ok: true, connected: true, agent: ALLOW_AGENT, defaultModel: DEFAULT_MODEL, models: MODELS, postReports: true, sweep: true, server: MCP_SERVER_PATH });
     } catch (err) {
-      writeJson(res, 503, { ok: false, connected: false, agent: ALLOW_AGENT, postReports: true, error: err.message });
+      writeJson(res, 503, { ok: false, connected: false, agent: ALLOW_AGENT, postReports: true, sweep: true, error: err.message });
     }
     return;
   }
@@ -446,8 +461,38 @@ const server = http.createServer(async (req, res) => {
         try { ({ prompt, title, context, model } = JSON.parse(body)); } catch { writeJson(res, 400, { error: 'Invalid JSON body — expected { "prompt": "..." }' }); return; }
         if (!prompt || typeof prompt !== 'string') { writeJson(res, 400, { error: 'Missing "prompt"' }); return; }
         if (agentRun && agentRun.state === 'running') { writeJson(res, 409, { error: 'a run is already in progress', id: agentRun.id }); return; }
+        if (sweeps.busy()) { writeJson(res, 409, { error: 'a parameter sweep is running — it owns the chart until it finishes', sweep: sweeps.status().id }); return; }
         const m = pickModel(model);
         writeJson(res, 200, { id: startAgent(prompt, title, context, m), model: m });
+      });
+      return;
+    }
+  }
+
+  if (pathname === '/sweep' || pathname.startsWith('/sweep/')) {
+    const readBody = (cb) => { let body = ''; req.on('data', (c) => { body += c; }); req.on('end', () => { let j; try { j = body ? JSON.parse(body) : {}; } catch { writeJson(res, 400, { error: 'Invalid JSON body' }); return; } cb(j); }); };
+    const fail = (e) => writeJson(res, e.code || 500, { error: e.message, ...(e.id ? { id: e.id } : {}), ...(e.state ? { state: e.state } : {}) });
+    if (req.method === 'GET' && pathname === '/sweep/status') { writeJson(res, 200, sweeps.status()); return; }
+    if (req.method === 'GET' && pathname === '/sweep/objectives') { writeJson(res, 200, { objectives: sweeps.objectives() }); return; }
+    if (req.method === 'POST' && pathname === '/sweep') {
+      readBody((j) => {
+        if (chartBusy().agent) { writeJson(res, 409, { error: 'an agent run is in progress — it owns the chart until it finishes', id: agentRun.id }); return; }
+        try { writeJson(res, 200, sweeps.start(j)); } catch (e) { fail(e); }
+      });
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/sweep/cancel') { try { writeJson(res, 200, sweeps.cancel()); } catch (e) { fail(e); } return; }
+    if (req.method === 'POST' && pathname === '/sweep/resume') {
+      readBody((j) => {
+        if (chartBusy().agent) { writeJson(res, 409, { error: 'an agent run is in progress', id: agentRun.id }); return; }
+        try { writeJson(res, 200, sweeps.resume(String(j.id || ''))); } catch (e) { fail(e); }
+      });
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/sweep/apply') {
+      readBody(async (j) => {
+        if (!SAFE_ID.test(String(j.id || ''))) { writeJson(res, 400, { error: 'bad sweep id' }); return; }
+        try { writeJson(res, 200, await sweeps.apply(String(j.id), Number(j.index), { readReport })); } catch (e) { fail(e); }
       });
       return;
     }
@@ -542,7 +587,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  writeJson(res, 404, { error: 'Not found. Endpoints: GET /viewer, GET /health, GET /tools, POST /call, POST /agent, POST /agent/cancel, POST /agent/resume, GET /agent/status, GET|POST /reports, GET|DELETE /reports/:id' });
+  writeJson(res, 404, { error: 'Not found. Endpoints: GET /viewer, GET /health, GET /tools, POST /call, POST /agent, POST /agent/cancel, POST /agent/resume, GET /agent/status, GET|POST /reports, GET|DELETE /reports/:id, POST /sweep, GET /sweep/status, POST /sweep/cancel, POST /sweep/resume, POST /sweep/apply, GET /sweep/objectives' });
 });
 
 server.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
@@ -551,6 +596,7 @@ server.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
   console.log(`[bridge] Gate Audit viewer: http://${BRIDGE_HOST}:${port}/viewer`);
   console.log(`[bridge] MCP server path: ${MCP_SERVER_PATH}`);
   console.log(`[bridge] agent endpoint: ${ALLOW_AGENT ? `ENABLED (claude -p, default model: ${DEFAULT_MODEL})` : 'disabled (MCP_BRIDGE_ALLOW_AGENT=1 to enable)'}`);
+  console.log(`[bridge] sweep job: enabled (journals in ${path.join(REPORTS_DIR, 'sweeps')}, timeout ${Math.round(SWEEP_TIMEOUT_MS / 60000)} min)`);
   if (!BRIDGE_TOKEN) {
     console.log('[bridge] WARNING: MCP_BRIDGE_TOKEN is not set. Do NOT expose this port through a tunnel without a token.');
   }

@@ -334,3 +334,107 @@ test('POST /call honours timeoutMs (clamped): a slow tool times out at 1 s but c
   const bt = await (await fetch(base + '/call', { method: 'POST', headers: H, body: JSON.stringify({ tool: 'strategy_run_backtest', params: { inputs: '{"in_3":"Hard Filter"}' }, timeoutMs: 60000 }) })).json();
   assert.equal(bt.success, true); assert.equal(bt.card.kind, 'backtest'); assert.deepEqual(bt.card.config.inputs, { in_3: 'Hard Filter' });
 });
+
+// ── Phase 4: sweep job ───────────────────────────────────────────────────────
+
+const SPACE = { params: [{ id: 'in_3', label: 'Trend Gate Mode', values: ['Soft Filter', 'Hard Filter'] }, { id: 'in_7', label: 'ER Range Threshold', type: 'decimal', min: 0.2, max: 0.25, step: 0.05 }], sampler: { kind: 'grid' }, pace_ms: 0 };
+const H2 = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+const untilSweep = async (b, pred, tries = 80) => { let st; for (let i = 0; i < tries; i++) { st = await (await fetch(b + '/sweep/status', { headers: H2 })).json(); if (pred(st)) return st; await new Promise((r) => setTimeout(r, 100)); } return st; };
+
+test('sweep job: start → 409 while busy → journal + sweep report with selection, inputs restored and verified', async () => {
+  const health = await (await fetch(base + '/health', { headers: H2 })).json();
+  assert.equal(health.sweep, true);
+  const objs = await (await fetch(base + '/sweep/objectives', { headers: H2 })).json();
+  assert.ok(objs.objectives.some((o) => o.name === 'multi_metric' && o.default));
+
+  const start = await fetch(base + '/sweep', { method: 'POST', headers: H2, body: JSON.stringify({ space: SPACE, objective: 'only_profit', title: 'grid 2×2' }) });
+  const startTxt = await start.text();
+  assert.equal(start.status, 200, startTxt);
+  const { id, total } = JSON.parse(startTxt);
+  assert.match(id, /^sw-[a-z0-9-]+$/); assert.equal(total, 4);
+  const again = await fetch(base + '/sweep', { method: 'POST', headers: H2, body: JSON.stringify({ space: SPACE }) });
+  assert.equal(again.status, 409);
+
+  const st = await untilSweep(base, (s) => s.state !== 'running');
+  assert.equal(st.state, 'done', JSON.stringify(st));
+  assert.equal(st.done, 4); assert.equal(st.results.length, 4); assert.equal(st.reportId, id);
+  assert.equal(st.restore.restored, true); assert.equal(st.restore.verified, true, 'inputs read back equal the originals');
+  assert.deepEqual(st.restore.original, { in_3: 'Soft Filter', in_7: 0.25 });
+
+  const rep = await (await fetch(base + '/reports/' + id, { headers: H2 })).json();
+  assert.equal(rep.type, 'sweep'); assert.equal(rep.data.results.length, 4); assert.ok(rep.data.baseline);
+  assert.ok(rep.data.selection && rep.data.selection.ranked.length === 4);
+  assert.ok(['edge', 'noise', 'insufficient'].includes(rep.data.selection.verdict));
+  assert.equal(rep.data.selection.verdict, 'insufficient', '4 runs < 8 settled runs → insufficient');
+  assert.ok(rep.data.matrix && rep.data.matrix.rows.length === 2 && rep.data.matrix.cols.length === 2);
+  assert.match(rep.body_md, /a direction, not a result/);
+  const ranked = rep.data.selection.ranked.map((i) => rep.data.results[i].objective);
+  assert.deepEqual(ranked, ranked.slice().sort((a, b) => a - b), 'ranked ascending (smaller objective is better)');
+
+  const jl = readFileSync(path.join(MAIN_REPORTS, 'sweeps', id + '.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(jl.map((r) => r.type), ['header', 'baseline', 'run', 'run', 'run', 'run', 'end']);
+  assert.equal(jl[jl.length - 1].state, 'done');
+});
+
+test('sweep cancel restores the original inputs and reports cancelled; apply writes a pending decision', async () => {
+  const slow = { ...SPACE, pace_ms: 400 };
+  const { id } = await (await fetch(base + '/sweep', { method: 'POST', headers: H2, body: JSON.stringify({ space: slow }) })).json();
+  await untilSweep(base, (s) => s.done >= 1);
+  assert.equal((await fetch(base + '/sweep/cancel', { method: 'POST', headers: H2 })).status, 200);
+  const st = await untilSweep(base, (s) => s.state !== 'running');
+  assert.equal(st.state, 'cancelled', JSON.stringify(st)); assert.equal(st.reason, 'cancelled');
+  assert.ok(st.done < 4); assert.equal(st.restore.restored, true); assert.equal(st.restore.verified, true);
+  assert.equal((await fetch(base + '/sweep/cancel', { method: 'POST', headers: H2 })).status, 409, 'nothing to cancel → 409');
+  assert.equal((await fetch(base + '/reports/' + id, { headers: H2 })).status, 404, 'a cancelled sweep writes no report');
+
+  // apply a run from the finished sweep of the previous test
+  const list = await (await fetch(base + '/reports', { headers: H2 })).json();
+  const sw = list.reports.find((r) => r.type === 'sweep');
+  assert.ok(sw, 'sweep report listed');
+  const ap = await fetch(base + '/sweep/apply', { method: 'POST', headers: H2, body: JSON.stringify({ id: sw.id, index: 1 }) });
+  const apTxt = await ap.text();
+  assert.equal(ap.status, 200, apTxt);
+  const { id: did, applied } = JSON.parse(apTxt);
+  assert.match(did, /^dc-/); assert.equal(applied.in_3, 'Soft Filter'); assert.equal(applied.in_7, 0.25);
+  const dec = await (await fetch(base + '/reports/' + did, { headers: H2 })).json();
+  assert.equal(dec.type, 'decision'); assert.equal(dec.data.status, 'pending'); assert.equal(dec.data.sweepReportId, sw.id);
+  const ind = await (await call('data_get_indicator', { entity_id: 'pf1' })).json();
+  assert.equal(ind.inputs.find((i) => i.id === 'in_7').value, 0.25, 'apply set the chart inputs');
+  assert.equal((await fetch(base + '/sweep/apply', { method: 'POST', headers: H2, body: JSON.stringify({ id: sw.id, index: 99 }) })).status, 404);
+});
+
+test('sweep resume continues a journal from its last written run', async () => {
+  const id = 'sw-resume-test';
+  const dir = path.join(MAIN_REPORTS, 'sweeps');
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  mkdirSync(dir, { recursive: true });
+  const space = { params: [{ id: 'in_3', label: 'Trend Gate Mode', type: 'categorical', values: ['Soft Filter', 'Hard Filter'], source: 'user' }, { id: 'in_7', label: 'ER', type: 'decimal', values: [0.2, 0.25], min: 0.2, max: 0.25, step: 0.05, source: 'user' }], sampler: { kind: 'grid', seed: 42, maxEvals: 64, n: 16, earlyStop: { patience: 10 } }, objective: 'only_profit', splitDate: null, topK: 3, pace_ms: 0 };
+  const header = { type: 'header', id, title: 'resumed', space, objective: 'only_profit', splitDate: null, costs: null, labels: {}, original: { in_3: 'Soft Filter', in_7: 0.25 }, entityId: 'pf1', symbol: 'STUB:SOLUSD', timeframe: '5', startedAt: Date.now() - 1000 };
+  const run = (index, inputs) => ({ type: 'run', index, inputs, configHash: 'x', metrics: { netProfit: 1, netProfitPct: 0.01, totalTrades: 35 }, isMetrics: { netProfit: 1, totalTrades: 35 }, oos: null, objective: -1, settled: true, warnings: [], pSharpe: 0.5, verdict: 'noise' });
+  writeFileSync(path.join(dir, id + '.jsonl'), [header, { type: 'baseline', baseline: { index: -1, inputs: header.original, metrics: { netProfit: 0 }, objective: 0, settled: true }, windowEnd: null }, run(0, { in_3: 'Soft Filter', in_7: 0.2 }), run(1, { in_3: 'Soft Filter', in_7: 0.25 }), { type: 'end', state: 'timeout', reason: 'timeout' }].map((r) => JSON.stringify(r)).join('\n') + '\n');
+  const r = await fetch(base + '/sweep/resume', { method: 'POST', headers: H2, body: JSON.stringify({ id }) });
+  const rTxt = await r.text();
+  assert.equal(r.status, 200, rTxt);
+  assert.equal(JSON.parse(rTxt).from, 2);
+  const st = await untilSweep(base, (s) => s.state !== 'running');
+  assert.equal(st.state, 'done', JSON.stringify(st)); assert.equal(st.done, 4);
+  const rep = await (await fetch(base + '/reports/' + id, { headers: H2 })).json();
+  assert.equal(rep.data.results.length, 4);
+  assert.deepEqual(rep.data.results.slice(2).map((x) => x.inputs.in_3), ['Hard Filter', 'Hard Filter']);
+  assert.equal((await fetch(base + '/sweep/resume', { method: 'POST', headers: H2, body: JSON.stringify({ id }) })).status, 409, 'finished sweeps do not resume');
+  assert.equal((await fetch(base + '/sweep/resume', { method: 'POST', headers: H2, body: JSON.stringify({ id: 'sw-nope' }) })).status, 404);
+});
+
+test('chart lock: a sweep cannot start while an agent run is active, and vice-versa', async (t) => {
+  const base2 = await startAgentBridge(t, { FAKE_CLAUDE_SLEEP: '30' });
+  await fetch(base2 + '/agent', { method: 'POST', headers: AH, body: JSON.stringify({ prompt: 'hold the chart' }) });
+  const sw = await fetch(base2 + '/sweep', { method: 'POST', headers: AH, body: JSON.stringify({ space: SPACE }) });
+  assert.equal(sw.status, 409); assert.match((await sw.json()).error, /agent run/);
+  await fetch(base2 + '/agent/cancel', { method: 'POST', headers: AH });
+  for (let i = 0; i < 60; i++) { const st = await (await fetch(base2 + '/agent/status', { headers: AH })).json(); if (st.state !== 'running') break; await new Promise((r) => setTimeout(r, 200)); }
+  const slow = { ...SPACE, pace_ms: 600 };
+  assert.equal((await fetch(base2 + '/sweep', { method: 'POST', headers: AH, body: JSON.stringify({ space: slow }) })).status, 200);
+  const ag = await fetch(base2 + '/agent', { method: 'POST', headers: AH, body: JSON.stringify({ prompt: 'x' }) });
+  assert.equal(ag.status, 409); assert.match((await ag.json()).error, /sweep/);
+  await fetch(base2 + '/sweep/cancel', { method: 'POST', headers: AH });
+});
