@@ -402,6 +402,17 @@ test('sweep cancel restores the original inputs and reports cancelled; apply wri
   const ind = await (await call('data_get_indicator', { entity_id: 'pf1' })).json();
   assert.equal(ind.inputs.find((i) => i.id === 'in_7').value, 0.25, 'apply set the chart inputs');
   assert.equal((await fetch(base + '/sweep/apply', { method: 'POST', headers: H2, body: JSON.stringify({ id: sw.id, index: 99 }) })).status, 404);
+
+  // a later backtest of the SAME settings over a window that extends past the sweep's resolves the decision
+  await new Promise((r) => setTimeout(r, 20));
+  const later = await (await fetch(base + '/call', { method: 'POST', headers: H2, body: JSON.stringify({ tool: 'strategy_run_backtest', params: { inputs: JSON.stringify(applied) } }) })).json();
+  assert.equal(later.success, true);
+  assert.deepEqual(later.resolvedDecisions, [did], 'the run reports which decision it resolved');
+  const dec2 = await (await fetch(base + '/reports/' + did, { headers: H2 })).json();
+  assert.equal(dec2.data.status, 'resolved'); assert.ok(dec2.data.realized && typeof dec2.data.realized.n === 'number');
+  assert.match(dec2.body_md, /Status: resolved/);
+  const other = await (await fetch(base + '/call', { method: 'POST', headers: H2, body: JSON.stringify({ tool: 'strategy_run_backtest', params: { inputs: JSON.stringify({ in_3: 'Hard Filter', in_7: 0.2 }) } }) })).json();
+  assert.equal(other.resolvedDecisions, undefined, 'a different config resolves nothing');
 });
 
 test('sweep resume continues a journal from its last written run', async () => {

@@ -8,10 +8,10 @@
  * written index), restores the original inputs in `finally` and verifies the restore, then
  * selects a winner the honest way (src/core/sweep.js) and writes a type:'sweep' report.
  */
-import { appendFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { normalizeSpace, expandGrid, sampleRandom, halvingPlan, countEvals, pointKey } from '../src/core/paramspace.js';
-import { summarizeRun, selectAndVerdict, matrixOf } from '../src/core/sweep.js';
+import { summarizeRun, selectAndVerdict, matrixOf, decisionResolvedBy, realizedFor } from '../src/core/sweep.js';
 import { list as listObjectives } from '../src/core/objectives.js';
 
 const STUDY_RE = /PineForge|PF 3G/i;
@@ -213,5 +213,29 @@ export function createSweepRunner({ callTool, reportsDir, saveReport, newId, tim
     return { id: did, applied: r.inputs };
   }
 
-  return { start, cancel, resume, apply, status: publicStatus, busy, current: () => job, objectives: listObjectives };
+  /**
+   * TradingAgents' pending → resolved back-fill: after any successful backtest, every pending
+   * decision with the same configHash whose window the new run extends past gets its realised
+   * out-of-sample figures written in. Returns the ids it resolved.
+   */
+  function resolvePending(card) {
+    const out = [];
+    let files = [];
+    try { files = readdirSync(reportsDir).filter((f) => f.endsWith('.json')); } catch { return out; }
+    for (const f of files) {
+      let rep; try { rep = JSON.parse(readFileSync(path.join(reportsDir, f), 'utf8')); } catch { continue; }
+      if (!rep || rep.type !== 'decision' || !rep.data || rep.data.status !== 'pending') continue;
+      if (!decisionResolvedBy(rep.data, card)) continue;
+      const realized = realizedFor(rep.data, card, { initialCapital: card.config && card.config.costs && card.config.costs.initialCapital });
+      const held = realized.n > 0 ? (realized.netProfit > 0 && (realized.profitFactor == null || realized.profitFactor > 1)) : null;
+      rep.data = { ...rep.data, status: 'resolved', resolvedAt: new Date().toISOString(), resolvedBy: card.id || null, realized, held };
+      rep.summary = 'resolved · ' + (held == null ? 'no new trades yet' : held ? 'held out-of-sample' : 'did NOT hold out-of-sample') + ' · sweep verdict ' + (rep.data.verdict || 'n/a');
+      rep.body_md = (rep.body_md || '').replace(/Status: pending[^\n]*/, `Status: resolved ${rep.data.resolvedAt.slice(0, 16)}Z — ${realized.n} new trades since ${realized.from || '?'}: net ${fmt(realized.netProfit)} · PF ${fmt(realized.profitFactor, 3)} · win rate ${fmt(realized.winRate)} % → ${held == null ? 'inconclusive' : held ? 'the decision HELD' : 'the decision did NOT hold'}`)
+        + `\n\nLesson: _write 2–4 sentences on what held, what failed and one actionable change (or run the "resolve decision" preset)._`;
+      saveReport(rep); out.push(rep.id);
+    }
+    return out;
+  }
+
+  return { start, cancel, resume, apply, resolvePending, status: publicStatus, busy, current: () => job, objectives: listObjectives };
 }

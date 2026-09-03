@@ -18,7 +18,7 @@ function stubBacktest(args) {
   let h = 0; for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   if (process.env.STUB_BACKTEST_FAIL === '1') return { success: false, error: 'stub backtest failed' };
   const net = (h % 200) - 60; // −60 … 139, deterministic per input set
-  const T0 = Date.UTC(2026, 7, 1);
+  const T0 = Date.now() - 35 * 3600e3; // the window ends now, so a later run extends past an earlier one
   const trades = Array.from({ length: 35 }, (_, i) => {
     const pnl = (i % 3 === 0 ? -4 : 6) + net / 35;
     return { n: i + 1, side: i % 2 ? 'long' : 'short', entryTime: new Date(T0 + i * 3600e3).toISOString(), exitTime: new Date(T0 + i * 3600e3 + 1800e3).toISOString(), pnl: Math.round(pnl * 100) / 100, pnlPct: Math.round(pnl) / 100, cumPnl: 0 };

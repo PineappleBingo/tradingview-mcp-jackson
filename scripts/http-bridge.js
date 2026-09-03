@@ -572,6 +572,10 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         const data = await callTool(tool, params ?? {}, timeoutMs);
+        // A fresh backtest of the same settings over new bars resolves any pending decision.
+        if (tool === 'strategy_run_backtest' && data && data.success && data.card) {
+          try { const ids = sweeps.resolvePending(data.card); if (ids.length) data.resolvedDecisions = ids; } catch (e) { console.error('[bridge] decision resolution failed:', e.message); }
+        }
         if (data && typeof data === 'object' && data.success === false) {
           console.error(`[bridge] tool ${tool} returned error:`, data.error ?? '(unknown)');
           const status = CDP_DOWN_RE.test(String(data.error ?? '')) ? 503 : 500;
