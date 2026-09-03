@@ -57,16 +57,17 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 ![Audit 탭 전체 화면](./images/01-audit-tab.png)
 *Audit 탭 — 헤더(스터디·심볼·fired/blocked 카운트), 탭, 스마트 프롬프트(모델 드롭다운 + send to Claude), pill 3종, 그리고 판정 스트립·게이트 히트맵·차단자 히스토그램·패턴 봉 표.*
 
-### 탭 4개
+### 탭 5개
 
 | 탭 | 상태 | 내용 |
 |---|---|---|
 | **Audit** | ✅ 동작 | 봉별 판정 스트립 · 게이트 히트맵 · 차단자 히스토그램 · 패턴 봉 표 · 봉 상세 드로어 |
 | **Reports** | ✅ 동작 | 저장된 AI 분석 리포트 목록 / 상세 |
-| **Backtest** | ⏳ 예정 | [Phase 3 계획](./phase-plan/phase-3-backtest.md) |
-| **Optimize** | ⏳ 예정 | [Phase 4 계획](./phase-plan/phase-4-optimize.md) |
+| **Alerts** | ✅ 동작 | TradingView 알림 목록 · stale 판정 · 켜기/끄기 · 삭제(확인 게이트) |
+| **Backtest** | ⏳ 예정 (2026-09 재설계) | [Phase 3 계획](./phase-plan/phase-3-backtest.md) — 라이브 Strategy Tester 읽기 + 재현 가능한 RunCard + 검증(IS/OOS · walk-forward · Monte-Carlo) · [바이어스 점검](./phase-plan/phase-3.5-bias-checks.md)(선택) |
+| **Optimize** | ⏳ 예정 (2026-09 재설계) | [Phase 4 계획](./phase-plan/phase-4-optimize.md) — 파라미터 공간 · 목적함수 · 재개 가능한 스윕 잡 · 판정(edge/noise/insufficient) · 재설계 사유는 [변경 노트](./phase-plan/phase-3-4-redesign-notes.ko.md) |
 
-주소창으로 바로 이동할 수 있습니다: `#audit` · `#reports` · `#reports/<리포트id>`
+주소창으로 바로 이동할 수 있습니다: `#audit` · `#reports` · `#reports/<리포트id>` · `#alerts` · `#backtest` · `#optimize`
 
 ---
 
@@ -209,6 +210,7 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 *Edu 모드 ON — 용어에 점선 밑줄(`backtest`, `profit factor`, `max drawdown`, `win rate`)이 생기고, 각 탭에 노란 테두리의 초보자용 해설이 나타납니다.*
 
 - 현재 등록된 용어: profit factor · max drawdown · win rate · backtest · sweep · overfitting · blocker · report
+- Phase 3/4에서 추가 예정: p-value · walk-forward · in-sample / out-of-sample · objective · stability · decision log
 
 ---
 
