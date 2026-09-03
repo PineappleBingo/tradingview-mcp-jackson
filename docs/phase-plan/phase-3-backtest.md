@@ -1,6 +1,6 @@
 # Phase 3 — Backtest tab: reproducible runs + a trust layer around the live Strategy Tester
 
-**Status: 📋 planned · redesigned 2026-09-03** (supersedes the 2026-08-31 flow-only plan; not yet started)
+**Status: 🛠 implemented 2026-09-03 · live verification pending** (commits `c64f82f` core · `086f606` bridge · `692b723` viewer; see [implementation notes](./phase-3-4-implementation-notes.ko.md) for what differs from this spec)
 Korean companions: [what changed and why](./phase-3-4-redesign-notes.ko.md) · [where each pattern comes from](./functional-spec-sources.ko.md)
 
 ## Principle (unchanged)

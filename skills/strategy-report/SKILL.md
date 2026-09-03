@@ -9,7 +9,9 @@ You are generating a detailed performance report for a Pine Script strategy on T
 
 ## Step 1: Gather Data
 
-Collect all available performance data:
+Collect all available performance data. Prefer the single validated call:
+0. `strategy_run_backtest` (optionally `split_date`, `initial_capital`) — ONE RunCard: normalized metrics with per-key source (`tv`/`computed`/`both`), full trade list, equity, IS/OOS split, Monte-Carlo p-values, walk-forward and a verdict (`edge|noise|insufficient`). Use its `card.body_md` as the backbone of the report.
+Fallbacks when the tool is unavailable:
 1. `data_get_strategy_results` — overall metrics (net profit, win rate, profit factor, etc.)
 2. `data_get_trades` — individual trade list (max 20)
 3. `data_get_equity` — equity curve data points

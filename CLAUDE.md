@@ -1,6 +1,6 @@
 # TradingView MCP — Claude Instructions
 
-83 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
+86 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
 
 ## Branch Rule — read first
 
@@ -13,7 +13,7 @@ confirm before doing it.)
 
 ## Environment note
 
-The MCP server connects to `localhost:9222`, so **all 83 tools require TradingView Desktop
+The MCP server connects to `localhost:9222`, so **all 86 tools require TradingView Desktop
 running on the same machine**. In a cloud session (`claude --cloud`) there is no chart and
 every tool fails. To use the web UI with a live chart, prefer `claude --remote-control` (runs
 locally, steered from the browser), or expose the HTTP bridge through a tunnel as described in
@@ -42,6 +42,10 @@ Use `study_filter` parameter to target a specific indicator by name substring (e
 2. `data_get_pine_tables` → the strategy's telemetry table (e.g., PF-TLM rows) verbatim
 3. `data_get_pine_labels` → blocked-entry labels (e.g., "X8·MAC" = pattern 8 blocked by the macro gate)
 4. Decode masks / short codes with the strategy repo's `docs/mcp-debug-workflow.md`, or invoke the `strategy-gate-debug` skill for the full loop
+
+### "Backtest or optimize my strategy" (Phase 3/4)
+1. `strategy_run_backtest` (`inputs` as `{in_N: value}`, `split_date`, `restore`) → ONE settled, normalized, validated RunCard: metrics with per-key provenance (`tv`/`computed`/`both`), IS/OOS split, Monte-Carlo p-values, walk-forward, verdict `edge|noise|insufficient`. Prefer it over `data_get_strategy_results` + `data_get_trades` whenever the numbers have to be trusted.
+2. `strategy_sweep_plan` (`meta_inputs` from the viewer's META probe via `ui_evaluate`, or an explicit `space`) → evaluation count, time estimate and the points — without running anything. The sweep itself is a **bridge job**: `POST /sweep` → `GET /sweep/status` → a `sweep` report; `POST /sweep/apply` writes a pending `decision` that a later backtest of the same config resolves. Specs: `docs/phase-plan/phase-3-backtest.md`, `phase-4-optimize.md`; implementation notes: `docs/phase-plan/phase-3-4-implementation-notes.ko.md`.
 
 ### "Give me price data"
 - `data_get_ohlcv` with `summary: true` → compact stats (high, low, range, change%, avg volume, last 5 bars)
