@@ -19,9 +19,11 @@ const TOKEN = 't0k';
 
 let proc, base;
 
+const MAIN_REPORTS = path.join(tmpdir(), 'tv-bridge-main-reports-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+
 before(async () => {
   proc = spawn(process.execPath, [BRIDGE], {
-    env: { ...process.env, MCP_BRIDGE_PORT: '0', MCP_BRIDGE_TOKEN: TOKEN, MCP_SERVER_PATH: STUB },
+    env: { ...process.env, MCP_BRIDGE_PORT: '0', MCP_BRIDGE_TOKEN: TOKEN, MCP_SERVER_PATH: STUB, MCP_BRIDGE_REPORTS_DIR: MAIN_REPORTS },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   base = await new Promise((resolve, reject) => {
@@ -281,4 +283,53 @@ test('agent job: run → 409 while busy → report saved, listed, fetched, delet
   assert.equal((await fetch(base2 + '/reports/NOPE!', { headers: H })).status, 400, 'unsafe report id rejected');
   assert.equal((await fetch(base2 + '/reports/' + id, { method: 'DELETE', headers: H })).status, 200);
   assert.equal((await fetch(base2 + '/reports/' + id, { headers: H })).status, 404);
+});
+
+// ── Phase 3: POST /reports and per-call timeouts ────────────────────────────
+
+test('POST /reports saves a backtest report the list and detail routes serve; bad input is rejected', async () => {
+  const H = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+  const health = await (await fetch(base + '/health', { headers: H })).json();
+  assert.equal(health.postReports, true, '/health advertises POST /reports for viewer feature-detection');
+
+  const card = { id: 'bt-x', metrics: { netProfit: 12.5 }, trades: [{ n: 1, pnl: 12.5 }] };
+  const res = await fetch(base + '/reports', { method: 'POST', headers: H, body: JSON.stringify({ type: 'backtest', title: 'SOLUSD 5 · Hard Filter', body_md: '# Backtest\n\nnet +12.5', data: card, context: ['backtest'] }) });
+  assert.equal(res.status, 200);
+  const { id, type } = await res.json();
+  assert.match(id, /^[a-z0-9-]+$/); assert.equal(type, 'backtest');
+
+  const list = await (await fetch(base + '/reports', { headers: H })).json();
+  const row = list.reports.find((r) => r.id === id);
+  assert.ok(row, 'listed'); assert.equal(row.type, 'backtest'); assert.equal(row.summary, 'net +12.5');
+  assert.equal(row.data, undefined, 'the list projection never carries the payload');
+  const rep = await (await fetch(base + '/reports/' + id, { headers: H })).json();
+  assert.deepEqual(rep.data, card); assert.deepEqual(rep.context, ['backtest']);
+  assert.equal((await fetch(base + '/reports/' + id, { method: 'DELETE', headers: H })).status, 200);
+
+  assert.equal((await fetch(base + '/reports', { method: 'POST', headers: H, body: JSON.stringify({ type: 'analysis', title: 't', body_md: '' }) })).status, 400, 'agent-only type rejected');
+  assert.equal((await fetch(base + '/reports', { method: 'POST', headers: H, body: JSON.stringify({ type: 'backtest', body_md: '' }) })).status, 400, 'title required');
+  assert.equal((await fetch(base + '/reports', { method: 'POST', headers: H, body: JSON.stringify({ type: 'backtest', title: 't' }) })).status, 400, 'body_md required');
+  assert.equal((await fetch(base + '/reports', { method: 'POST', headers: H, body: '{' })).status, 400);
+  assert.equal((await fetch(base + '/reports', { method: 'POST', body: '{}' })).status, 401, 'token-gated');
+});
+
+test('POST /reports rejects a body over 5 MB with 413', async () => {
+  const H = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+  const big = JSON.stringify({ type: 'backtest', title: 'big', body_md: 'x'.repeat(5 * 1024 * 1024 + 10) });
+  let status;
+  try { status = (await fetch(base + '/reports', { method: 'POST', headers: H, body: big })).status; }
+  catch (e) { status = 413; } // the bridge destroys the socket after answering; node may surface that as a fetch error
+  assert.equal(status, 413);
+});
+
+test('POST /call honours timeoutMs (clamped): a slow tool times out at 1 s but completes at the default', async () => {
+  const H = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+  const fast = await fetch(base + '/call', { method: 'POST', headers: H, body: JSON.stringify({ tool: 'slow_tool', params: { delay_ms: 1500 }, timeoutMs: 1000 }) });
+  assert.equal(fast.status, 500);
+  assert.match((await fast.json()).error, /timed out/);
+  const ok = await fetch(base + '/call', { method: 'POST', headers: H, body: JSON.stringify({ tool: 'slow_tool', params: { delay_ms: 300 }, timeoutMs: 999999 }) });
+  assert.equal(ok.status, 200, 'an oversized timeoutMs is clamped, not rejected');
+  assert.equal((await ok.json()).slow, true);
+  const bt = await (await fetch(base + '/call', { method: 'POST', headers: H, body: JSON.stringify({ tool: 'strategy_run_backtest', params: { inputs: '{"in_3":"Hard Filter"}' }, timeoutMs: 60000 }) })).json();
+  assert.equal(bt.success, true); assert.equal(bt.card.kind, 'backtest'); assert.deepEqual(bt.card.config.inputs, { in_3: 'Hard Filter' });
 });
