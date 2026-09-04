@@ -12,6 +12,109 @@ const BARS_PATH = KNOWN_PATHS.mainSeriesBars;
 // '${...}' interpolation breaks on quotes/backslashes and enables injection.
 export const jsStr = (s) => JSON.stringify(String(s ?? ''));
 
+// ── Strategy Tester access (shared by the readers below, the settle signature in
+// src/wait.js and the Phase 3 snapshot in ./backtest.js) ─────────────────────────
+// Verified live on TradingView Desktop 3.4.0 (2026-09-04):
+//  - EVERY study carries a `performance` watched value, so the old
+//    `ordersData || reportData || performance` scan matched the Volume indicator.
+//    The model names the strategy directly (activeStrategySource); the fallback scans
+//    metaInfo().isTVScriptStrategy. An indicator() script never qualifies.
+//  - reportData() nests the metrics under performance.{all,long,short} plus a few
+//    top-level ratios (maxStrategyDrawDown, sharpeRatio, …); every *Percent value and
+//    percentProfitable is a FRACTION (0.05 = 5 %).
+//  - The closed-trade list is reportData().trades ({e,x,q,tp,cp,rn,dd,cm}, times in ms);
+//    ordersData() is the raw fill list keyed by bar index. buyHold[0] is the initial capital.
+export const strategySourceJS = (entityId = null) => `(function() {
+  var model = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget.model().model();
+  var want = ${jsStr(entityId)};
+  var isStrat = function(s) { try { var mi = typeof s.metaInfo === 'function' ? s.metaInfo() : s.metaInfo; return !!(mi && mi.isTVScriptStrategy && typeof s.reportData === 'function'); } catch (e) { return false; } };
+  var sources = model.dataSources();
+  if (want) { for (var i = 0; i < sources.length; i++) { var s = sources[i]; try { if (typeof s.id === 'function' && s.id() === want) return isStrat(s) ? s : null; } catch (e) {} } return null; }
+  try { var a = model.activeStrategySource && model.activeStrategySource(); a = a && typeof a.value === 'function' ? a.value() : a; if (a && isStrat(a)) return a; } catch (e) {}
+  for (var j = 0; j < sources.length; j++) if (isStrat(sources[j])) return sources[j];
+  return null;
+})()`;
+
+// Page-side function source: (strat, maxTrades) → { report, trades, tradesTotal, openTrades }.
+// report = { <perf.all key>: {all,long,short}, <top-level ratio>: number, currency, dateRange, initialCapital }
+// trades = the LAST maxTrades rows (null = all, 0 = none), one level flattened (e_tm, x_p, tp_v, …),
+//          the still-open ones flagged `open` — TradingView lists them but excludes them from netProfit.
+export const REPORT_FLATTEN_JS = `function(strat, maxTrades) {
+  var unwrap = function(v) { return (v && typeof v === 'object' && typeof v.value === 'function') ? v.value() : v; };
+  var rd = unwrap(typeof strat.reportData === 'function' ? strat.reportData() : strat.reportData) || {};
+  var perf = rd.performance || {}, all = perf.all || {}, lng = perf.long || {}, sht = perf.short || {};
+  var report = {};
+  Object.keys(perf).forEach(function(k) { if (typeof perf[k] === 'number') report[k] = perf[k]; });
+  Object.keys(all).forEach(function(k) { if (typeof all[k] === 'number') report[k] = { all: all[k], long: typeof lng[k] === 'number' ? lng[k] : null, short: typeof sht[k] === 'number' ? sht[k] : null }; });
+  if (rd.currency) report.currency = rd.currency;
+  if (rd.settings && rd.settings.dateRange) report.dateRange = rd.settings.dateRange;
+  if (Array.isArray(rd.buyHold) && typeof rd.buyHold[0] === 'number') report.initialCapital = rd.buyHold[0];
+  var list = Array.isArray(rd.trades) ? rd.trades : [], total = list.length;
+  var open = typeof all.totalOpenTrades === 'number' ? all.totalOpenTrades : 0;
+  var take = maxTrades == null ? total : Math.max(0, Math.min(total, maxTrades)), trades = [];
+  for (var t = total - take; t < total; t++) {
+    var o = list[t]; if (!o || typeof o !== 'object') continue;
+    var tr = {}, ks = Object.keys(o);
+    for (var q = 0; q < ks.length; q++) { var v = o[ks[q]]; if (v === null || v === undefined || typeof v === 'function') continue;
+      if (typeof v !== 'object') tr[ks[q]] = v;
+      else if (!Array.isArray(v)) { var nk = Object.keys(v); for (var n = 0; n < nk.length; n++) { var nv = v[nk[n]]; if (nv !== null && nv !== undefined && typeof nv !== 'function' && typeof nv !== 'object') tr[ks[q] + '_' + nk[n]] = nv; } } }
+    if (t >= total - open) tr.open = true;
+    trades.push(tr);
+  }
+  return { report: report, trades: trades, tradesTotal: total, openTrades: open };
+}`;
+
+// ── trades: TradingView's flattened trade rows → one schema ────────────────────
+const pick = (o, keys) => { for (const k of keys) { if (o[k] !== undefined && o[k] !== null && o[k] !== '') return o[k]; } return undefined; };
+const toIso = (t) => { if (t == null) return null; const ms = typeof t === 'number' ? (t < 1e12 ? t * 1000 : t) : Date.parse(t); return Number.isFinite(ms) ? new Date(ms).toISOString() : null; };
+const sideOf = (v) => {
+  if (v == null) return null;
+  const s = String(v).toLowerCase();
+  if (s === 'se' || s === 'sx' || /short|sell/.test(s)) return 'short';
+  if (s === 'le' || s === 'lx' || /long|buy/.test(s)) return 'long';
+  if (v === 1 || s === '1') return 'long';
+  if (v === -1 || s === '-1') return 'short';
+  return null;
+};
+const num = (v) => { const n = typeof v === 'string' ? parseFloat(v) : v; return Number.isFinite(n) ? n : undefined; };
+
+/**
+ * reportData().trades rows as flattened by REPORT_FLATTEN_JS (e_tm/x_tm/tp_v/…, recorded live)
+ * come first; any other shape falls through to the tolerant key search. Sorted by entry time,
+ * numbered, with a running cumPnl. Open trades keep `open:true` and no exit.
+ */
+export function mapTrades(orders) {
+  const rows = (orders || []).map((o) => {
+    if (o && typeof o === 'object' && (o.e_tm !== undefined || o.x_tm !== undefined)) {
+      const pct = num(o.tp_p);
+      return {
+        side: sideOf(o.e_tp) ?? sideOf(o.e_c), entryTime: toIso(o.e_tm), exitTime: o.open ? null : toIso(o.x_tm),
+        entryPrice: num(o.e_p), exitPrice: o.open ? undefined : num(o.x_p), qty: num(o.q),
+        pnl: num(o.tp_v), pnlPct: pct === undefined ? undefined : pct * 100,
+        barsHeld: num(o.x_b) !== undefined && num(o.e_b) !== undefined ? o.x_b - o.e_b : undefined,
+        entrySignal: o.e_c || null, exitSignal: o.x_c || null, runUp: num(o.rn_v), drawdown: num(o.dd_v), commission: num(o.cm),
+        ...(o.open ? { open: true } : {}),
+      };
+    }
+    return {
+      side: sideOf(pick(o, ['side', 'direction', 'tradeType', 'trade_type', 'entry_type', 'entryType', 'type', 'entry_side'])),
+      entryTime: toIso(pick(o, ['entry_time', 'entryTime', 'entry_barTime', 'entry_bar_time', 'openTime', 'open_time', 'entryBarTime'])),
+      exitTime: toIso(pick(o, ['exit_time', 'exitTime', 'exit_barTime', 'exit_bar_time', 'closeTime', 'close_time', 'exitBarTime'])),
+      entryPrice: num(pick(o, ['entry_price', 'entryPrice', 'open_price', 'openPrice'])),
+      exitPrice: num(pick(o, ['exit_price', 'exitPrice', 'close_price', 'closePrice'])),
+      qty: num(pick(o, ['qty', 'quantity', 'size', 'contracts', 'entry_qty', 'exit_qty'])),
+      pnl: num(pick(o, ['profit', 'pnl', 'profit_abs', 'profit_v', 'profit_value', 'netProfit', 'net_profit'])),
+      pnlPct: num(pick(o, ['profit_percent', 'profit_pct', 'pnl_pct', 'profit_p', 'profitPercent', 'netProfitPercent'])),
+      barsHeld: num(pick(o, ['bars', 'barsHeld', 'bars_held', 'duration_bars'])),
+      entrySignal: pick(o, ['entry_signal', 'entry_name', 'entry_id', 'entryName']) ?? null,
+      exitSignal: pick(o, ['exit_signal', 'exit_name', 'exit_id', 'exitName']) ?? null,
+    };
+  }).filter((t) => t.pnl !== undefined || t.entryTime);
+  rows.sort((a, b) => (Date.parse(a.entryTime || 0) || 0) - (Date.parse(b.entryTime || 0) || 0));
+  let cum = 0;
+  return rows.map((t, i) => { cum += t.pnl || 0; return { n: i + 1, ...t, cumPnl: Math.round(cum * 100) / 100 }; });
+}
+
 function buildGraphicsJS(collectionName, mapKey, filter) {
   return `
     (function() {
@@ -142,120 +245,54 @@ export async function getIndicator({ entity_id }) {
 }
 
 export async function getStrategyResults() {
-  const results = await evaluate(`
+  const r = await evaluate(`
     (function() {
       try {
-        var chart = ${CHART_API}._chartWidget;
-        var sources = chart.model().model().dataSources();
-        var strat = null;
-        for (var i = 0; i < sources.length; i++) {
-          var s = sources[i];
-          if (s.metaInfo && (s.ordersData || s.reportData || s.performance)) { strat = s; break; }
-        }
-        if (!strat) return {metrics: {}, source: 'internal_api', error: 'No strategy found on chart. Add a strategy indicator first.'};
-        var metrics = {};
-        if (strat.reportData) {
-          var rd = typeof strat.reportData === 'function' ? strat.reportData() : strat.reportData;
-          if (rd && typeof rd === 'object') {
-            if (typeof rd.value === 'function') rd = rd.value();
-            if (rd) { var keys = Object.keys(rd); for (var k = 0; k < keys.length; k++) { var val = rd[keys[k]]; if (val !== null && val !== undefined && typeof val !== 'function') metrics[keys[k]] = val; } }
-          }
-        }
-        if (Object.keys(metrics).length === 0 && strat.performance) {
-          var perf = strat.performance();
-          if (perf && typeof perf.value === 'function') perf = perf.value();
-          if (perf && typeof perf === 'object') { var pkeys = Object.keys(perf); for (var p = 0; p < pkeys.length; p++) { var pval = perf[pkeys[p]]; if (pval !== null && pval !== undefined && typeof pval !== 'function') metrics[pkeys[p]] = pval; } }
-        }
-        return {metrics: metrics, source: 'internal_api'};
-      } catch(e) { return {metrics: {}, source: 'internal_api', error: e.message}; }
+        var strat = ${strategySourceJS()};
+        if (!strat) return { error: 'No strategy found on chart. Add a strategy — an indicator() script has no Strategy Tester report.' };
+        var f = (${REPORT_FLATTEN_JS})(strat, 0);
+        var metrics = {}, long = {}, short = {};
+        Object.keys(f.report).forEach(function(k) { var v = f.report[k]; if (v && typeof v === 'object' && 'all' in v) { metrics[k] = v.all; if (v.long != null) long[k] = v.long; if (v.short != null) short[k] = v.short; } else metrics[k] = v; });
+        return { metrics: metrics, long: long, short: short, trade_count: f.tradesTotal, open_trades: f.openTrades };
+      } catch(e) { return { error: e.message }; }
     })()
   `);
-  return { success: true, metric_count: Object.keys(results?.metrics || {}).length, source: results?.source, metrics: results?.metrics || {}, error: results?.error };
+  if (!r || r.error) return { success: true, metric_count: 0, source: 'internal_api', metrics: {}, error: r?.error ?? 'no result' };
+  return { success: true, metric_count: Object.keys(r.metrics).length, source: 'internal_api', metrics: r.metrics, long: r.long, short: r.short, trade_count: r.trade_count, open_trades: r.open_trades, note: 'percent fields (*Percent, percentProfitable) are fractions: 0.05 = 5 %' };
 }
 
 export async function getTrades({ max_trades } = {}) {
   const limit = Math.min(max_trades || 20, MAX_TRADES);
-  const trades = await evaluate(`
+  const r = await evaluate(`
     (function() {
       try {
-        var chart = ${CHART_API}._chartWidget;
-        var sources = chart.model().model().dataSources();
-        var strat = null;
-        for (var i = 0; i < sources.length; i++) {
-          var s = sources[i];
-          if (s.metaInfo && (s.ordersData || s.reportData || s.performance)) { strat = s; break; }
-        }
-        if (!strat) return {trades: [], source: 'internal_api', error: 'No strategy found on chart.'};
-        var orders = null;
-        if (strat.ordersData) { orders = typeof strat.ordersData === 'function' ? strat.ordersData() : strat.ordersData; if (orders && typeof orders.value === 'function') orders = orders.value(); }
-        if (!orders || !Array.isArray(orders)) {
-          if (strat._orders) orders = strat._orders;
-          else if (strat.tradesData) { orders = typeof strat.tradesData === 'function' ? strat.tradesData() : strat.tradesData; if (orders && typeof orders.value === 'function') orders = orders.value(); }
-        }
-        if (!orders || !Array.isArray(orders)) return {trades: [], source: 'internal_api', error: 'ordersData() returned non-array.'};
-        var result = [];
-        for (var t = 0; t < Math.min(orders.length, ${limit}); t++) {
-          var o = orders[t];
-          if (typeof o === 'object' && o !== null) {
-            var trade = {};
-            var okeys = Object.keys(o);
-            for (var k = 0; k < okeys.length; k++) {
-              var v = o[okeys[k]];
-              if (v !== null && v !== undefined && typeof v !== 'function' && typeof v !== 'object') trade[okeys[k]] = v;
-              else if (v !== null && v !== undefined && typeof v === 'object' && !Array.isArray(v)) {
-                var nkeys = Object.keys(v);
-                for (var n = 0; n < nkeys.length; n++) { var nv = v[nkeys[n]]; if (nv !== null && nv !== undefined && typeof nv !== 'function' && typeof nv !== 'object') trade[okeys[k] + '_' + nkeys[n]] = nv; }
-              }
-            }
-            result.push(trade);
-          }
-        }
-        return {trades: result, source: 'internal_api'};
-      } catch(e) { return {trades: [], source: 'internal_api', error: e.message}; }
+        var strat = ${strategySourceJS()};
+        if (!strat) return { error: 'No strategy found on chart. Add a strategy — an indicator() script has no trade list.' };
+        var f = (${REPORT_FLATTEN_JS})(strat, ${limit});
+        return { trades: f.trades, total: f.tradesTotal, open: f.openTrades };
+      } catch(e) { return { error: e.message }; }
     })()
   `);
-  return { success: true, trade_count: trades?.trades?.length || 0, source: trades?.source, trades: trades?.trades || [], error: trades?.error };
+  if (!r || r.error) return { success: true, trade_count: 0, source: 'internal_api', trades: [], error: r?.error ?? 'no result' };
+  const trades = mapTrades(r.trades);
+  return { success: true, trade_count: trades.length, total_trades: r.total, open_trades: r.open, source: 'internal_api', trades, note: 'most recent ' + trades.length + ' of ' + r.total + ' (newest last)' };
 }
 
 export async function getEquity() {
-  const equity = await evaluate(`
+  const r = await evaluate(`
     (function() {
       try {
-        var chart = ${CHART_API}._chartWidget;
-        var sources = chart.model().model().dataSources();
-        var strat = null;
-        for (var i = 0; i < sources.length; i++) {
-          var s = sources[i];
-          if (s.metaInfo && (s.ordersData || s.reportData || s.performance)) { strat = s; break; }
-        }
-        if (!strat) return {data: [], source: 'internal_api', error: 'No strategy found on chart.'};
-        var data = [];
-        if (strat.equityData) {
-          var eq = typeof strat.equityData === 'function' ? strat.equityData() : strat.equityData;
-          if (eq && typeof eq.value === 'function') eq = eq.value();
-          if (Array.isArray(eq)) data = eq;
-        }
-        if (data.length === 0 && strat.bars) {
-          var bars = typeof strat.bars === 'function' ? strat.bars() : strat.bars;
-          if (bars && typeof bars.lastIndex === 'function') {
-            var end = bars.lastIndex(); var start = bars.firstIndex();
-            for (var i = start; i <= end; i++) { var v = bars.valueAt(i); if (v) data.push({time: v[0], equity: v[1], drawdown: v[2] || null}); }
-          }
-        }
-        if (data.length === 0) {
-          var perfData = {};
-          if (strat.performance) {
-            var perf = strat.performance();
-            if (perf && typeof perf.value === 'function') perf = perf.value();
-            if (perf && typeof perf === 'object') { var pkeys = Object.keys(perf); for (var p = 0; p < pkeys.length; p++) { if (/equity|drawdown|profit|net/i.test(pkeys[p])) perfData[pkeys[p]] = perf[pkeys[p]]; } }
-          }
-          if (Object.keys(perfData).length > 0) return {data: [], equity_summary: perfData, source: 'internal_api', note: 'Full equity curve not available via API; equity summary metrics returned instead.'};
-        }
-        return {data: data, source: 'internal_api'};
-      } catch(e) { return {data: [], source: 'internal_api', error: e.message}; }
+        var strat = ${strategySourceJS()};
+        if (!strat) return { error: 'No strategy found on chart.' };
+        var f = (${REPORT_FLATTEN_JS})(strat, null);
+        var cap = typeof f.report.initialCapital === 'number' ? f.report.initialCapital : 0, data = [];
+        for (var i = 0; i < f.trades.length; i++) { var t = f.trades[i]; if (t.open || typeof t.cp_v !== 'number') continue; data.push({ time: typeof t.x_tm === 'number' ? Math.round(t.x_tm / 1000) : null, equity: cap + t.cp_v, drawdown: typeof t.dd_v === 'number' ? t.dd_v : null }); }
+        return { data: data, initial_capital: cap };
+      } catch(e) { return { error: e.message }; }
     })()
   `);
-  return { success: true, data_points: equity?.data?.length || 0, source: equity?.source, data: equity?.data || [], equity_summary: equity?.equity_summary, note: equity?.note, error: equity?.error };
+  if (!r || r.error) return { success: true, data_points: 0, source: 'internal_api', data: [], error: r?.error ?? 'no result' };
+  return { success: true, data_points: r.data.length, source: 'internal_api', data: r.data, initial_capital: r.initial_capital, note: 'closed-trade equity: initial capital + cumulative P&L at each exit (TradingView exposes no bar-by-bar curve)' };
 }
 
 export async function getQuote({ symbol } = {}) {
