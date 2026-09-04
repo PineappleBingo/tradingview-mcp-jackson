@@ -48,6 +48,9 @@ Use `study_filter` parameter to target a specific indicator by name substring (e
 **Requires a `strategy()` script on the chart.** An `indicator()` has no Strategy Tester, so
 these tools have nothing to read — `chart_get_state` marks the real ones with `is_strategy: true`.
 (PF 3G VP is an indicator; the gate-audit tools above are what apply to it.)
+
+How-to for humans, with interactive flow diagrams: `docs/BACKTEST_OPTIMIZE_GUIDE.md` (`docs/flows/*.html`).
+
 1. `strategy_run_backtest` (`inputs` as `{in_N: value}`, `split_date`, `restore`) → ONE settled, normalized, validated RunCard: metrics with per-key provenance (`tv`/`computed`/`both`), IS/OOS split, Monte-Carlo p-values, walk-forward, verdict `edge|noise|insufficient`. Prefer it over `data_get_strategy_results` + `data_get_trades` whenever the numbers have to be trusted.
 2. `strategy_sweep_plan` (`meta_inputs` from the viewer's META probe via `ui_evaluate`, or an explicit `space`) → evaluation count, time estimate and the points — without running anything. The sweep itself is a **bridge job**: `POST /sweep` → `GET /sweep/status` → a `sweep` report; `POST /sweep/apply` writes a pending `decision` that a later backtest of the same config resolves. Specs: `docs/phase-plan/phase-3-backtest.md`, `phase-4-optimize.md`; implementation notes: `docs/phase-plan/phase-3-4-implementation-notes.ko.md`.
 

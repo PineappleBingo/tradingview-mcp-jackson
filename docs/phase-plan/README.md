@@ -32,6 +32,10 @@ tester at all, and TradingView's percentages are fractions) plus two more in the
 
 **Implementation 2026-09-03** (Phase 3 + 4 code, no live chart in the session): [what was built, how it works, what differs from the specs](./phase-3-4-implementation-notes.ko.md) · [functional spec of the implementation: file ← source, why, what, and what was not ported](./functional-spec-implementation.ko.md).
 
+**Interactive flow diagrams** (self-contained HTML — pan, zoom, search, trace, guided views):
+[run one backtest](../flows/backtest-flow.html) · [sweep and decide](../flows/optimize-flow.html) ·
+walkthrough in [`../BACKTEST_OPTIMIZE_GUIDE.md`](../BACKTEST_OPTIMIZE_GUIDE.md).
+
 Related: user manual [`../VIEWER_GUIDE.ko.md`](../VIEWER_GUIDE.ko.md) ·
 outstanding side-deliverable: `docs/PROMPT_CATALOGUE.md` (planned in the v2 master plan, not yet written).
 

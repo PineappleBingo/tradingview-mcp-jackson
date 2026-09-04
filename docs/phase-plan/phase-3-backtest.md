@@ -7,6 +7,7 @@
 > are not the shapes TradingView Desktop 3.4 returns. Both are fixed and re-verified end to end;
 > the answers are in [Open questions — answered live](#open-questions--answered-live-2026-09-04).
 Korean companions: [what changed and why](./phase-3-4-redesign-notes.ko.md) · [where each pattern comes from](./functional-spec-sources.ko.md)
+User flow as an interactive diagram: [run one backtest](../flows/backtest-flow.html) · how-to: [`../BACKTEST_OPTIMIZE_GUIDE.md`](../BACKTEST_OPTIMIZE_GUIDE.md)
 
 ## Principle (unchanged)
 
