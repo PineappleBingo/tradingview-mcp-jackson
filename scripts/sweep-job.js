@@ -15,6 +15,7 @@ import { summarizeRun, selectAndVerdict, matrixOf, decisionResolvedBy, realizedF
 import { list as listObjectives } from '../src/core/objectives.js';
 
 const STUDY_RE = /PineForge|PF 3G/i;
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\const STUDY_RE = /PineForge|PF 3G/i;');
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const fmt = (v, d = 2) => (v == null || !Number.isFinite(v)) ? '–' : (Math.round(v * 10 ** d) / 10 ** d).toString();
 
@@ -48,11 +49,17 @@ export function createSweepRunner({ callTool, reportsDir, saveReport, newId, tim
     return stage1.concat(h.stage2(results.slice(0, stage1.length)));
   }
 
-  async function resolveStudy() {
+  // `study` is a name substring; without one: PF 3G, else the first strategy() script the
+  // chart reports (chart_get_state flags them — an indicator has no Strategy Tester).
+  async function resolveStudy(study) {
     const st = await callTool('chart_get_state', {}, 30_000);
-    const study = ((st && st.studies) || []).find((s) => STUDY_RE.test(s.name || ''));
-    if (!study) throw new Error('PF 3G VP strategy not found on the chart');
-    return { entityId: study.id || study.entity_id, name: study.name, symbol: st.symbol, timeframe: st.resolution };
+    const list = (st && st.studies) || [];
+    const flagged = list.some((s) => s.is_strategy);
+    const found = study ? list.find((s) => new RegExp(escapeRe(study), 'i').test(s.name || ''))
+      : flagged ? (list.find((s) => s.is_strategy && STUDY_RE.test(s.name || '')) || list.find((s) => s.is_strategy)) : list.find((s) => STUDY_RE.test(s.name || ''));
+    if (!found) throw new Error((study || 'PF 3G VP') + ' strategy not found on the chart' + (list.some((s) => s.is_strategy) ? '' : ' — no strategy() script is loaded'));
+    const study_ = found;
+    return { entityId: study_.id || study_.entity_id, name: study_.name, symbol: st.symbol, timeframe: st.resolution };
   }
 
   async function readInputs(entityId, ids) {
@@ -80,12 +87,12 @@ export function createSweepRunner({ callTool, reportsDir, saveReport, newId, tim
     let killer = null;
     try {
       if (!resumed) {
-        const study = await resolveStudy();
+        const study = await resolveStudy(j.study);
         Object.assign(j, { entityId: study.entityId, studyName: study.name, symbol: study.symbol, timeframe: study.timeframe });
         j.restore.original = await readInputs(j.entityId, ids);
         const missing = ids.filter((id) => !(id in j.restore.original));
         if (missing.length) throw new Error('inputs not found on the study: ' + missing.join(', '));
-        journal(j.id, { type: 'header', id: j.id, title: j.title, space: j.space, objective: j.objective, splitDate: j.splitDate, costs: j.costs, labels: j.labels, original: j.restore.original, entityId: j.entityId, symbol: j.symbol, timeframe: j.timeframe, startedAt: j.startedAt });
+        journal(j.id, { type: 'header', id: j.id, title: j.title, study: j.study, space: j.space, objective: j.objective, splitDate: j.splitDate, costs: j.costs, labels: j.labels, original: j.restore.original, entityId: j.entityId, symbol: j.symbol, timeframe: j.timeframe, startedAt: j.startedAt });
         // baseline: the chart as it is
         j.current = { index: -1, inputs: j.restore.original };
         const base = await callTool('strategy_run_backtest', { config: JSON.stringify({ study: { entityId: j.entityId, name: j.studyName }, inputs: {}, splitDate: j.splitDate, costs: j.costs }) }, runTimeoutMs);
@@ -94,7 +101,7 @@ export function createSweepRunner({ callTool, reportsDir, saveReport, newId, tim
         j.baseline.settleMs = base.card.settleMs; j.windowEnd = base.card.window && base.card.window.lastTradeTime;
         j.expectedMs = (j.total || countEvals(j.space)) * ((base.card.settleMs || 5000) + j.space.pace_ms + 500);
         journal(j.id, { type: 'baseline', baseline: j.baseline, windowEnd: j.windowEnd });
-      } else if (j.entityId == null) { const study = await resolveStudy(); j.entityId = study.entityId; j.studyName = study.name; }
+      } else if (j.entityId == null) { const study = await resolveStudy(j.study); j.entityId = study.entityId; j.studyName = study.name; }
       killer = setTimeout(() => { if (j.state === 'running') j.cancelFlag = 'timeout'; }, timeoutMs);
       if (killer.unref) killer.unref();
 
@@ -150,7 +157,7 @@ export function createSweepRunner({ callTool, reportsDir, saveReport, newId, tim
           const body_md = renderSweepMd(j, selection, matrix);
           saveReport({ id: rid, createdAt: new Date(j.startedAt).toISOString(), type: 'sweep', title: j.title, summary: `${selection.verdict} · ${j.results.length} runs · ` + selection.reasons.slice(0, 2).join('; '), body_md, context: ['sweep'],
             elapsedMs: j.endedAt - j.startedAt,
-            data: { space: j.space, objective: j.objective, splitDate: j.splitDate, costs: j.costs, labels: j.labels, symbol: j.symbol, timeframe: j.timeframe, entityName: j.studyName, windowEnd: j.windowEnd, baseline: j.baseline, results: j.results, selection, matrix, restore: j.restore, reason: j.reason || null } });
+            data: { study: j.study, space: j.space, objective: j.objective, splitDate: j.splitDate, costs: j.costs, labels: j.labels, symbol: j.symbol, timeframe: j.timeframe, entityName: j.studyName, windowEnd: j.windowEnd, baseline: j.baseline, results: j.results, selection, matrix, restore: j.restore, reason: j.reason || null } });
           j.reportId = rid; j.selection = selection; j.state = 'done';
         } catch (e) { j.error = 'report write failed: ' + e.message; j.state = 'error'; }
       }
@@ -159,14 +166,14 @@ export function createSweepRunner({ callTool, reportsDir, saveReport, newId, tim
     }
   }
 
-  function start({ space: rawSpace, objective, splitDate, title, costs, labels }) {
+  function start({ space: rawSpace, objective, splitDate, title, costs, labels, study }) {
     if (busy()) throw Object.assign(new Error('a sweep is already running'), { code: 409, id: job.id });
     const space = normalizeSpace(rawSpace);
     const obj = objective || space.objective || 'multi_metric';
     if (!listObjectives().some((o) => o.name === obj)) throw Object.assign(new Error('unknown objective ' + obj), { code: 400 });
     const id = 'sw-' + newId();
     job = { id, state: 'running', startedAt: Date.now(), endedAt: null, expectedMs: countEvals(space) * 21_000, total: countEvals(space), done: 0, current: null,
-      space, objective: obj, splitDate: splitDate || space.splitDate || null, costs: costs || null, labels: labels || Object.fromEntries(space.params.map((p) => [p.id, p.label || p.id])),
+      study: study ? String(study) : null, space, objective: obj, splitDate: splitDate || space.splitDate || null, costs: costs || null, labels: labels || Object.fromEntries(space.params.map((p) => [p.id, p.label || p.id])),
       title: title || ('sweep · ' + space.params.map((p) => p.label || p.id).join(' × ') + ' · ' + obj), baseline: null, results: [], restore: { original: {}, restored: false, verified: null, error: null }, reportId: null, error: null, reason: null, cancelFlag: null };
     runLoop(job).catch((e) => { job.error = e.message; job.state = 'error'; });
     return { id, total: job.total, expectedMs: job.expectedMs };
@@ -190,7 +197,7 @@ export function createSweepRunner({ callTool, reportsDir, saveReport, newId, tim
     const ended = recs.filter((r) => r.type === 'end').pop();
     if (ended && ended.state === 'done') throw Object.assign(new Error('sweep ' + id + ' already finished'), { code: 409 });
     job = { id, state: 'running', startedAt: header.startedAt || Date.now(), endedAt: null, expectedMs: countEvals(header.space) * 21_000, total: countEvals(header.space), done: results.length, current: null,
-      space: header.space, objective: header.objective, splitDate: header.splitDate, costs: header.costs, labels: header.labels || {}, title: header.title, entityId: header.entityId, studyName: null, symbol: header.symbol, timeframe: header.timeframe,
+      study: header.study || null, space: header.space, objective: header.objective, splitDate: header.splitDate, costs: header.costs, labels: header.labels || {}, title: header.title, entityId: header.entityId, studyName: null, symbol: header.symbol, timeframe: header.timeframe,
       baseline: baseline ? baseline.baseline : null, windowEnd: baseline ? baseline.windowEnd : null, results, restore: { original: header.original, restored: false, verified: null, error: null }, reportId: null, error: null, reason: null, cancelFlag: null, resumedFrom: id };
     journal(id, { type: 'resume', at: Date.now(), from: results.length });
     runLoop(job, { resumed: true }).catch((e) => { job.error = e.message; job.state = 'error'; });
@@ -203,13 +210,15 @@ export function createSweepRunner({ callTool, reportsDir, saveReport, newId, tim
     if (!rep || rep.type !== 'sweep') throw Object.assign(new Error('no sweep report ' + id), { code: 404 });
     const r = (rep.data.results || []).find((x) => x.index === Number(index));
     if (!r) throw Object.assign(new Error('no run with index ' + index), { code: 404 });
-    const study = await resolveStudy();
+    const study = await resolveStudy(rep.data.study);
     await callTool('indicator_set_inputs', { entity_id: study.entityId, inputs: JSON.stringify(r.inputs) }, 30_000);
     const did = 'dc-' + newId();
     const sel = rep.data.selection || {};
-    const body_md = `# Decision · applied sweep ${id} run ${r.index}\n\n` + Object.entries(r.inputs).map(([k, v]) => '- ' + ((rep.data.labels || {})[k] || k) + ' = ' + v).join('\n') + `\n\nSweep verdict: **${sel.verdict || 'n/a'}** — ${(sel.reasons || []).join('; ')}\n\nStatus: pending — a later backtest of the same config whose window extends past ${rep.data.windowEnd || '?'} resolves this decision with realised figures.`;
+    // Cut at the applied run's own last trade; windowEnd (the baseline's) is the pre-fix fallback.
+    const cut = (r.window && r.window.lastTradeTime) || rep.data.windowEnd || null;
+    const body_md = `# Decision · applied sweep ${id} run ${r.index}\n\n` + Object.entries(r.inputs).map(([k, v]) => '- ' + ((rep.data.labels || {})[k] || k) + ' = ' + v).join('\n') + `\n\nSweep verdict: **${sel.verdict || 'n/a'}** — ${(sel.reasons || []).join('; ')}\n\nStatus: pending — a later backtest of the same config whose window extends past ${cut || '?'} resolves this decision with realised figures.`;
     saveReport({ id: did, createdAt: new Date().toISOString(), type: 'decision', title: 'decision · ' + Object.entries(r.inputs).map(([k, v]) => ((rep.data.labels || {})[k] || k) + '=' + v).join(', '), summary: 'pending · sweep verdict ' + (sel.verdict || 'n/a'), body_md, context: ['sweep', id],
-      data: { status: 'pending', configHash: r.configHash, inputs: r.inputs, labels: rep.data.labels || {}, verdict: sel.verdict || null, sweepReportId: id, runIndex: r.index, lastTradeTime: rep.data.windowEnd || null, objective: r.objective, baselineObjective: rep.data.baseline ? rep.data.baseline.objective : null, symbol: rep.data.symbol, timeframe: rep.data.timeframe } });
+      data: { status: 'pending', configHash: r.configHash, inputs: r.inputs, labels: rep.data.labels || {}, verdict: sel.verdict || null, sweepReportId: id, runIndex: r.index, lastTradeTime: cut, objective: r.objective, baselineObjective: rep.data.baseline ? rep.data.baseline.objective : null, symbol: rep.data.symbol, timeframe: rep.data.timeframe } });
     return { id: did, applied: r.inputs };
   }
 

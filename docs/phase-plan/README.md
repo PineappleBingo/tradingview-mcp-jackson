@@ -15,13 +15,20 @@ was added along the way, so the viewer now has five tabs).
 | [1.5](./phase-1.5-pills-chips.md) | Pill toggle · attach-to-prompt chips · auto-fill pills | ✅ shipped | `f222c4d` |
 | [2](./phase-2-agent-reports.md) | send-to-Claude agent runs · Reports archive · model routing | ✅ shipped | `b449237` `c6ce861` `acb5d45` |
 | 2.1 | Alerts tab · health flags · on/off toggle · delete behind a confirm gate | ✅ shipped | `061c607` `bac512b` `2126a65` |
-| [3](./phase-3-backtest.md) | Backtest tab — `RunConfig`/`RunCard`, tester settle detection, normalized metrics, validation (IS/OOS · walk-forward · Monte-Carlo), `POST /reports` | 🛠 implemented · live verification pending | `c64f82f` `086f606` `692b723` |
+| [3](./phase-3-backtest.md) | Backtest tab — `RunConfig`/`RunCard`, tester settle detection, normalized metrics, validation (IS/OOS · walk-forward · Monte-Carlo), `POST /reports` | ✅ shipped · verified live 2026-09-04 | `c64f82f` `086f606` `692b723` + live fixes |
 | [3.5](./phase-3.5-bias-checks.md) | Bias checks — repaint/lookahead via replay, history sensitivity | 📋 optional | — |
-| [4](./phase-4-optimize.md) | Optimize tab — typed parameter space, objective registry, resumable bridge sweep job, verdict + decision log (4b What-if · 4c multi-symbol still planned) | 🛠 implemented · live verification pending | `6fa737f` `777521a` `389e4ae` `ff282e0` |
+| [4](./phase-4-optimize.md) | Optimize tab — typed parameter space, objective registry, resumable bridge sweep job, verdict + decision log (4b What-if · 4c multi-symbol still planned) | ✅ shipped · verified live 2026-09-04 | `6fa737f` `777521a` `389e4ae` `ff282e0` + live fixes |
 
 **Redesign 2026-09-03** (Phase 3/4 reviewed against the code and against ten open-source
 trading repos): [what changed, how and why](./phase-3-4-redesign-notes.ko.md) ·
 [which pattern came from which repo, and what was left out](./functional-spec-sources.ko.md).
+
+**Live verification 2026-09-04**: the first run against a real Strategy Tester found three
+blocking defects (the strategy locate idiom matched any study, an `indicator()` script has no
+tester at all, and TradingView's percentages are fractions) plus two more in the decision log and
+`ui_open_panel`. All fixed and re-verified end to end — see
+[§7 of the implementation notes](./phase-3-4-implementation-notes.ko.md) and
+[Phase 3 · Open questions answered live](./phase-3-backtest.md).
 
 **Implementation 2026-09-03** (Phase 3 + 4 code, no live chart in the session): [what was built, how it works, what differs from the specs](./phase-3-4-implementation-notes.ko.md) · [functional spec of the implementation: file ← source, why, what, and what was not ported](./functional-spec-implementation.ko.md).
 

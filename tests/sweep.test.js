@@ -66,6 +66,22 @@ test('decisions resolve only for the same configHash with a later window; realiz
   assert.equal(r.n, 10); assert.equal(r.to, card.window.lastTradeTime);
 });
 
+test('summarizeRun keeps the run\'s own window so a decision is cut at ITS last trade, not the baseline\'s', () => {
+  // Two parameter sets trade on different cadences: the slower one\'s last trade is hours behind.
+  const fast = mkCard({ g: 'Soft' }, 100, { n: 40 }), slow = mkCard({ g: 'Hard' }, 100, { n: 20 });
+  const rSlow = summarizeRun(slow, { index: 0, inputs: { g: 'Hard' }, objective: 'only_profit' });
+  assert.equal(rSlow.window.lastTradeTime, slow.window.lastTradeTime);
+  assert.ok(rSlow.window.lastTradeTime < fast.window.lastTradeTime, 'the slow config stopped trading earlier');
+  // Cutting at the applied run\'s own window resolves on its next trade; cutting at the faster
+  // baseline\'s would demand 20 extra hours of bars and drop the trades in between.
+  const own = { status: 'pending', configHash: slow.config.configHash, lastTradeTime: rSlow.window.lastTradeTime };
+  const borrowed = { ...own, lastTradeTime: fast.window.lastTradeTime };
+  const nextRun = mkCard({ g: 'Hard' }, 100, { n: 24 });
+  assert.equal(decisionResolvedBy(own, nextRun), true);
+  assert.equal(decisionResolvedBy(borrowed, nextRun), false, 'the baseline clock hides four real new trades');
+  assert.equal(realizedFor(own, nextRun).n, 4);
+});
+
 test('matrixOf builds a rows×cols grid for exactly two parameters', () => {
   const m = matrixOf(results, space);
   assert.equal(m.rows.length, 2); assert.equal(m.cols.length, 4);

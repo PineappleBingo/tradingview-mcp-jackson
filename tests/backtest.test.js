@@ -135,12 +135,78 @@ test('waitForTesterSettle: settled after the signature changes and holds for sta
   const r2 = await waitForTesterSettle({ before: seq[0], pollMs: 250, stablePolls: 3, timeoutMs: 2000, signature: async () => seq[0], sleep: async (ms) => { t2 += ms; }, now: () => t2 });
   assert.equal(r2.settled, false); assert.equal(r2.changed, false); assert.ok(r2.settleMs >= 2000);
   assert.equal(sigKey({ found: false }), 'null');
-  assert.match(TESTER_SIGNATURE_JS, /ordersData/);
+  assert.match(TESTER_SIGNATURE_JS, /isTVScriptStrategy/); assert.match(TESTER_SIGNATURE_JS, /reportData/);
 });
 
-test('snapshot JS embeds the caps and the strategy locate idiom', () => {
-  const js = snapshotJS(123, 45);
-  assert.match(js, /orders\.length - 123/); assert.match(js, /eq\.length > 45/); assert.match(js, /ordersData \|\| s\.reportData \|\| s\.performance/);
+test('snapshot JS embeds the caps, the strategy locate idiom and the entity id', () => {
+  const js = snapshotJS(123, 45, 'GOyDAA');
+  assert.match(js, /\(strat, 123\)/); assert.match(js, /eq\.length > 45/); assert.match(js, /isTVScriptStrategy/); assert.match(js, /activeStrategySource/); assert.match(js, /"GOyDAA"/);
+  assert.doesNotMatch(js, /ordersData \|\| s\.reportData \|\| s\.performance/, 'every study has performance on Desktop 3.4 — that scan matched the Volume indicator');
+});
+
+// Two rows exactly as REPORT_FLATTEN_JS produced them on TradingView Desktop 3.4.0 (SOLUSD·15,
+// Supertrend Strategy, 2026-09-04): ms timestamps, sides in e_tp, fractions for %, the open trade last.
+const LIVE_ROWS = [
+  { e_c: 'My Long Entry Id', e_p: 84.11, e_tm: 1777606200000, e_b: 14, e_tp: 'le', q: 1783.803, x_c: 'My Short Entry Id', x_p: 83.8, x_tm: 1777667400000, x_b: 82, x_tp: 'lx', tp_v: -552.97894, tp_p: -0.0036856497, cp_v: -552.97894, cp_p: -0.00055297895, rn_v: 1337.8523, rn_p: 0.008916895, dd_v: 838.3874, dd_p: 0.0055879205, cm: 0 },
+  { e_c: 'My Short Entry Id', e_p: 103.65, e_tm: 1788481800000, e_b: 12073, e_tp: 'se', q: 1392.225, x_c: '', x_p: 103.9, x_tm: 1788499303710, x_b: 12092, x_tp: 'sx', tp_v: -348.05624, tp_p: -0.0024119634, cp_v: -38241.8, cp_p: -0.0003617649, cm: 0, open: true },
+];
+test('mapTrades: live reportData().trades rows — side from e_tp, ms times, fraction → percent, open trade kept without an exit', () => {
+  const t = mapTrades(LIVE_ROWS);
+  assert.equal(t.length, 2);
+  assert.equal(t[0].side, 'long'); assert.equal(t[0].entryTime, '2026-05-01T03:30:00.000Z'); assert.equal(t[0].exitTime, '2026-05-01T20:30:00.000Z');
+  assert.equal(t[0].pnl, -552.97894); assert.ok(Math.abs(t[0].pnlPct - -0.36856497) < 1e-9); assert.equal(t[0].barsHeld, 68); assert.equal(t[0].entrySignal, 'My Long Entry Id'); assert.equal(t[0].open, undefined);
+  assert.equal(t[1].side, 'short'); assert.equal(t[1].open, true); assert.equal(t[1].exitTime, null); assert.equal(t[1].exitPrice, undefined); assert.equal(t[1].exitSignal, null);
+  assert.equal(t[1].cumPnl, Math.round((-552.97894 - 348.05624) * 100) / 100);
+});
+
+test('tvMetrics: every TradingView percentage is a fraction and is scaled to percent', () => {
+  const m = tvMetrics({ netProfitPercent: { all: -0.037893746, long: 0.01, short: -0.05 }, maxStrategyDrawDownPercent: 0.0733352625, percentProfitable: { all: 0.3143812709 }, avgTradePercent: { all: -0.0012 }, maxStrategyDrawDown: 74557.13, sharpeRatio: -0.6264 });
+  assert.ok(Math.abs(m.metrics.netProfitPct - -3.7893746) < 1e-6); assert.ok(Math.abs(m.metrics.maxDrawdownPct - 7.33352625) < 1e-6);
+  assert.ok(Math.abs(m.metrics.winRate - 31.43812709) < 1e-6); assert.ok(Math.abs(m.metrics.avgTradePct - -0.12) < 1e-9);
+  assert.equal(m.metrics.maxDrawdown, 74557.13); assert.equal(m.metrics.sharpe, -0.6264); assert.equal(m.long.netProfitPct, 0.01, 'per-side values are passed through raw');
+});
+
+test('runBacktest: open trades are listed but excluded from metrics, validation and the window; the report supplies the capital', async () => {
+  const rows = LIVE_ROWS.concat(Array.from({ length: 31 }, (_, i) => ({ e_tm: 1777700000000 + i * 3600e3, x_tm: 1777700000000 + i * 3600e3 + 1800e3, e_tp: i % 2 ? 'le' : 'se', tp_v: i % 3 ? 10 : -6, tp_p: i % 3 ? 0.001 : -0.0006 })));
+  const rd = { netProfit: { all: rows.filter((r) => !r.open).reduce((a, r) => a + r.tp_v, 0) }, totalTrades: { all: 32 }, initialCapital: 1000000 };
+  const { deps } = fakeDeps({ readStrategySnapshot: async () => ({ reportData: rd, orders: rows, ordersTotal: 33, openTrades: 1, equity: { points: [], total: 0, downsampled: false } }) });
+  const r = await runBacktest({}, deps);
+  assert.equal(r.success, true, JSON.stringify(r));
+  assert.equal(r.card.trades.length, 33); assert.equal(r.card.openTrades, 1); assert.equal(r.card.window.tradeCount, 32);
+  assert.equal(r.card.metrics.totalTrades, 32); assert.equal(r.card.metricSources.netProfit, 'both');
+  assert.equal(r.card.costs.initialCapital, 1000000); assert.ok(r.card.metrics.netProfitPct != null, 'percent metric computed from the report capital');
+  assert.ok(r.card.warnings.includes('no_equity'));
+});
+
+test('runBacktest: a tester that has not computed is flagged no_report, not reported as a clean zero-trade run', async () => {
+  const { deps } = fakeDeps({ readStrategySnapshot: async () => ({ reportData: {}, orders: [], ordersTotal: 0, openTrades: 0, hasReport: false, equity: { points: [], total: 0, downsampled: false } }) });
+  const r = await runBacktest({}, deps);
+  assert.equal(r.success, true);
+  assert.ok(r.card.warnings.includes('no_report'), 'blank tester is distinguishable from "computed but took no trades"');
+  assert.equal(r.card.window.tradeCount, 0);
+  assert.equal(r.card.validation.verdict, 'insufficient');
+  const ok = fakeDeps({ readStrategySnapshot: async () => ({ reportData: { netProfit: { all: 0 } }, orders: [], ordersTotal: 0, openTrades: 0, hasReport: true, equity: { points: [{ t: 1, equity: 1, dd: 0 }], total: 1, downsampled: false } }) });
+  const r2 = await runBacktest({}, ok.deps);
+  assert.ok(!r2.card.warnings.includes('no_report'), 'a real zero-trade run carries no no_report warning');
+});
+
+test('snapshot JS reports whether the tester produced a report at all', () => {
+  assert.match(snapshotJS(10, 10), /hasReport/);
+});
+
+test('runBacktest: with no name filter, falls back to the study chart_get_state flags as a strategy', async () => {
+  const { calls, deps } = fakeDeps({ getChartState: async () => ({ symbol: 'X', resolution: '15', studies: [{ id: 'v', name: 'Volume' }, { id: 'pf', name: 'PineForge 3rd Gen Volume Profile [Coinbase]' }, { id: 'st', name: 'Supertrend Strategy', is_strategy: true }] }) });
+  const r = await runBacktest({ study: { name: 'Supertrend' } }, deps);
+  assert.equal(r.card.config.study.entityId, 'st');
+  const r2 = await runBacktest({}, deps);
+  assert.equal(r2.card.config.study.entityId, 'st', 'the PF 3G INDICATOR matches the default name regex but has no tester — the flagged strategy wins');
+  const r2b = await runBacktest({ study: { name: 'PineForge' } }, deps);
+  assert.equal(r2b.card.config.study.entityId, 'pf', 'an explicit filter is honoured as given');
+  const r3 = await runBacktest({}, { ...deps, getChartState: async () => ({ studies: [{ id: 'v', name: 'Volume' }, { id: 'st', name: 'MACD Strategy', is_strategy: true }] }) });
+  assert.equal(r3.card.config.study.entityId, 'st');
+  const r4 = await runBacktest({}, { ...deps, getChartState: async () => ({ studies: [{ id: 'v', name: 'Volume' }] }) });
+  assert.equal(r4.success, false); assert.match(r4.error, /indicator\(\) script has no Strategy Tester/);
+  assert.ok(calls.length);
 });
 
 test('renderRunCardMd renders verdict, table and trades without throwing on sparse cards', () => {

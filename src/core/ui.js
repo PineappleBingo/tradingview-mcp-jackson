@@ -2,6 +2,7 @@
  * Core UI automation logic.
  */
 import { evaluate, evaluateAsync, getClient } from '../connection.js';
+import { ensurePineEditorOpen, PINE_EDITOR_OPEN_JS } from './pine.js';
 
 export async function click({ by, value }) {
   const escaped = JSON.stringify(value);
@@ -28,35 +29,91 @@ export async function click({ by, value }) {
   return { success: true, clicked: result };
 }
 
+// Bottom bar state, read from TradingView's own model rather than guessed from the DOM.
+// Verified live (Desktop 3.4.0, 2026-09-04): mode() is normal|minimized|maximized,
+// close() minimizes (the bar itself stays "visible"), showWidget(name) is ASYNC and both
+// activates the tab and restores normal height. The old code called bwb.hideWidget(), which
+// does not exist on this build, and still reported performed:'closed' — a silent lie.
+const BOTTOM_STATE_JS = `(function() {
+  var b = window.TradingView && window.TradingView.bottomWidgetBar;
+  if (!b) return null;
+  var u = function(v) { return (v && typeof v === 'object' && typeof v.value === 'function') ? v.value() : v; };
+  var mode = '', active = '';
+  try { mode = String(u(b.mode()) || ''); } catch (e) {}
+  try { active = String(u(b.activeWidgetName()) || ''); } catch (e) {}
+  var ba = document.querySelector('[class*="layout__area--bottom"]');
+  return { mode: mode, active: active, height: ba ? ba.offsetHeight : 0 };
+})()`;
+const bottomIsOpen = (s, widgetName) => !!s && s.mode !== 'minimized' && s.active === widgetName && s.height > 50;
+// The Pine editor is NOT a bottom-bar tab on Desktop 3.4 — it opens as a floating dialog the
+// bar's model never reports, and activateScriptEditorTab() alone does not raise it. Its real
+// state is "is Monaco on screen", which is what ensurePineEditorOpen() already drives.
+const pineIsOpen = () => evaluate(PINE_EDITOR_OPEN_JS);
+const closePineDialog = () => evaluate(`
+  (function() {
+    var m = document.querySelector('.monaco-editor.pine-editor-monaco');
+    if (!m) return null;
+    // The dialog's Close button sits several levels ABOVE Monaco (7 on Desktop 3.4) and every
+    // class name in that shell is build-hashed, so walk up and match the accessible name.
+    for (var e = m.parentElement, d = 0; e && e !== document.body && d < 12; e = e.parentElement, d++) {
+      var btns = e.querySelectorAll('button,[role="button"]');
+      for (var i = 0; i < btns.length; i++) {
+        var b = btns[i]; if (!b.offsetParent) continue;
+        var l = (b.getAttribute('aria-label') || b.getAttribute('title') || '').trim();
+        if (/^close$/i.test(l)) { b.click(); return null; }
+      }
+    }
+    return 'no close control found above the Pine editor';
+  })()
+`);
+
 export async function openPanel({ panel, action }) {
   const isBottomPanel = panel === 'pine-editor' || panel === 'strategy-tester';
   if (isBottomPanel) {
     const widgetName = panel === 'pine-editor' ? 'pine-editor' : 'backtesting';
-    const result = await evaluate(`
-      (function() {
-        var bwb = window.TradingView && window.TradingView.bottomWidgetBar;
-        if (!bwb) return { error: 'bottomWidgetBar not available' };
-        var panel = ${JSON.stringify(panel)};
-        var widgetName = ${JSON.stringify(widgetName)};
-        var action = ${JSON.stringify(action)};
-        var bottomArea = document.querySelector('[class*="layout__area--bottom"]');
-        var isOpen = !!(bottomArea && bottomArea.offsetHeight > 50);
-        if (panel === 'pine-editor') { var monacoEl = document.querySelector('.monaco-editor.pine-editor-monaco'); isOpen = isOpen && !!monacoEl; }
-        if (panel === 'strategy-tester') { var stratPanel = document.querySelector('[data-name="backtesting"]') || document.querySelector('[class*="strategyReport"]'); isOpen = isOpen && !!(stratPanel && stratPanel.offsetParent); }
-        var performed = 'none';
-        if (action === 'open' || (action === 'toggle' && !isOpen)) {
-          if (panel === 'pine-editor') { if (typeof bwb.activateScriptEditorTab === 'function') bwb.activateScriptEditorTab(); else if (typeof bwb.showWidget === 'function') bwb.showWidget(widgetName); }
-          else { if (typeof bwb.showWidget === 'function') bwb.showWidget(widgetName); }
-          performed = 'opened';
-        } else if (action === 'close' || (action === 'toggle' && isOpen)) {
-          if (typeof bwb.hideWidget === 'function') bwb.hideWidget(widgetName);
-          performed = 'closed';
-        }
-        return { was_open: isOpen, performed: performed };
-      })()
-    `);
-    if (result && result.error) throw new Error(result.error);
-    return { success: true, panel, action, was_open: result?.was_open ?? false, performed: result?.performed ?? 'unknown' };
+    const isPine = panel === 'pine-editor';
+    const before = await evaluate(BOTTOM_STATE_JS);
+    if (!before) throw new Error('bottomWidgetBar not available');
+    const wasOpen = isPine ? await pineIsOpen() : bottomIsOpen(before, widgetName);
+    const want = action === 'toggle' ? !wasOpen : action === 'open';
+    let performed = 'none';
+    if (want !== wasOpen && isPine) {
+      if (want) { await ensurePineEditorOpen(); }
+      else { const e = await closePineDialog(); if (e) throw new Error('close pine-editor failed: ' + e); }
+      performed = want ? 'opened' : 'closed';
+    } else if (want !== wasOpen) {
+      const call = want
+        ? (panel === 'pine-editor'
+          ? `(typeof b.activateScriptEditorTab === 'function' ? b.activateScriptEditorTab() : b.showWidget(${JSON.stringify(widgetName)}))`
+          : `b.showWidget(${JSON.stringify(widgetName)})`)
+        : 'b.close()';
+      const err = await evaluateAsync(`
+        (function() {
+          var b = window.TradingView && window.TradingView.bottomWidgetBar;
+          if (!b) return 'bottomWidgetBar not available';
+          try { return Promise.resolve(${call}).then(function() { return null; }, function(e) { return String(e && e.message || e); }); }
+          catch (e) { return String(e && e.message || e); }
+        })()
+      `);
+      if (err) throw new Error(`${action} ${panel} failed: ${err}`);
+      performed = want ? 'opened' : 'closed';
+    } else {
+      performed = wasOpen ? 'already_open' : 'already_closed';
+    }
+    // Verify: showWidget resolves before the layout settles, and a build that ignores the call
+    // must not be reported as success.
+    let after = before, isOpen = wasOpen;
+    for (let i = 0; i < 20; i++) {
+      after = await evaluate(BOTTOM_STATE_JS);
+      isOpen = isPine ? await pineIsOpen() : bottomIsOpen(after, widgetName);
+      if (isOpen === want) break;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    if (isOpen !== want) {
+      return { success: false, panel, action, was_open: wasOpen, is_open: isOpen, performed: 'none',
+        error: `panel is still ${isOpen ? 'open' : 'closed'} after ${action}` + (isPine ? '' : ` (mode ${after && after.mode}, active tab ${(after && after.active) || 'none'})`) };
+    }
+    return { success: true, panel, action, was_open: wasOpen, is_open: isOpen, performed, ...(isPine ? {} : { mode: after.mode, active_tab: after.active }) };
   } else {
     const selectorMap = {
       'watchlist': { dataName: 'base-watchlist-widget-button', ariaLabel: 'Watchlist' },

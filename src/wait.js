@@ -1,4 +1,5 @@
 import { evaluate } from './connection.js';
+import { strategySourceJS, REPORT_FLATTEN_JS } from './core/data.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -78,36 +79,25 @@ export async function waitForChartReady(expectedSymbol = null, expectedTf = null
 // repopulates in stages (orders first, report last). Nothing in TradingView announces
 // "done", so we watch a cheap signature and call it settled once it has CHANGED from the
 // pre-change value and then stayed identical for `stablePolls` consecutive polls.
-export const TESTER_SIGNATURE_JS = `
+// The signature deliberately ignores the OPEN trade: its exit price/time tick with the live
+// quote, so including it would never settle on a chart that holds a position.
+export const testerSignatureJS = (entityId = null) => `
   (function() {
     try {
-      var chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
-      var sources = chart.model().model().dataSources();
-      var strat = null;
-      for (var i = 0; i < sources.length; i++) { var s = sources[i]; if (s.metaInfo && (s.ordersData || s.reportData || s.performance)) { strat = s; break; } }
+      var strat = ${strategySourceJS(entityId)};
       if (!strat) return { found: false };
-      var unwrap = function(v) { if (v && typeof v === 'object' && typeof v.value === 'function') v = v.value(); return v; };
-      var pick = function(o, keys) { if (!o) return null; for (var k = 0; k < keys.length; k++) { var v = o[keys[k]]; if (v === undefined || v === null) continue; if (typeof v === 'object' && v.all !== undefined) v = v.all; if (typeof v === 'number') return v; } return null; };
-      var orders = null;
-      try { orders = unwrap(typeof strat.ordersData === 'function' ? strat.ordersData() : strat.ordersData); } catch (e) {}
-      if (!Array.isArray(orders)) { try { orders = unwrap(typeof strat.tradesData === 'function' ? strat.tradesData() : strat.tradesData); } catch (e) {} }
-      var tradeCount = Array.isArray(orders) ? orders.length : null;
-      var lastKey = null;
-      if (Array.isArray(orders) && orders.length) {
-        var last = orders[orders.length - 1], parts = [];
-        var walk = function(o, depth) { if (!o || typeof o !== 'object' || depth > 1) return; var ks = Object.keys(o); for (var k = 0; k < ks.length; k++) { var v = o[ks[k]]; if (typeof v === 'number' || typeof v === 'string') parts.push(ks[k] + '=' + v); else if (v && typeof v === 'object' && !Array.isArray(v)) walk(v, depth + 1); } };
-        walk(last, 0); lastKey = parts.join('|').slice(0, 400);
-      }
-      var rd = null;
-      try { rd = unwrap(typeof strat.reportData === 'function' ? strat.reportData() : strat.reportData); } catch (e) {}
-      return { found: true, tradeCount: tradeCount, lastKey: lastKey,
-        netProfit: pick(rd, ['netProfit', 'net_profit']), totalTrades: pick(rd, ['totalTrades', 'total_trades']) };
+      var f = (${REPORT_FLATTEN_JS})(strat, 3);
+      var last = null; for (var i = f.trades.length - 1; i >= 0; i--) if (!f.trades[i].open) { last = f.trades[i]; break; }
+      var parts = []; if (last) { var ks = Object.keys(last); for (var k = 0; k < ks.length; k++) parts.push(ks[k] + '=' + last[ks[k]]); }
+      var pick = function(key) { var v = f.report[key]; return v && typeof v === 'object' ? v.all : (typeof v === 'number' ? v : null); };
+      return { found: true, tradeCount: f.tradesTotal - f.openTrades, lastKey: parts.join('|').slice(0, 400), netProfit: pick('netProfit'), totalTrades: pick('totalTrades') };
     } catch (e) { return { found: false, error: e.message }; }
   })()
 `;
+export const TESTER_SIGNATURE_JS = testerSignatureJS();
 
-export async function testerSignature() {
-  return evaluate(TESTER_SIGNATURE_JS);
+export async function testerSignature(entityId = null) {
+  return evaluate(entityId ? testerSignatureJS(entityId) : TESTER_SIGNATURE_JS);
 }
 
 export const sigKey = (s) => JSON.stringify(s && s.found ? [s.tradeCount, s.lastKey, s.netProfit, s.totalTrades] : null);

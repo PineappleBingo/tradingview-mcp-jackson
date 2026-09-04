@@ -46,6 +46,10 @@ export function summarizeRun(card, { index, inputs, objective, splitDate = null,
   return {
     index, inputs: inputs || (card.config && card.config.inputs) || {}, configHash: card.config && card.config.configHash,
     metrics: compact(card.metrics), isMetrics, oos,
+    // Each run's OWN window: a decision applied from this point is resolved by trades after
+    // THIS config's last trade, not after the baseline's (a different parameter set trades on a
+    // different cadence, so the baseline's clock is the wrong cut for both trigger and figures).
+    window: card.window || null,
     objective: score(objective, isMetrics), settled: !!card.settled, settleMs: card.settleMs ?? null, warnings: card.warnings || [], curve: curveOf(trades),
     pSharpe: card.validation && card.validation.monteCarlo ? card.validation.monteCarlo.pSharpe : null,
     verdict: card.validation ? card.validation.verdict : null, reportId: card.reportId || null,

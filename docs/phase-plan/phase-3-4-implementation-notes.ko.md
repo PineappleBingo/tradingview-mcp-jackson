@@ -1,7 +1,7 @@
 # Phase 3 · 4 구현 노트 — 무엇을 어떻게 왜 만들었고, 어떻게 동작하며, 스펙과 무엇이 다른가
 
-> 구현일 2026-09-03 · 기준 브랜치 `my-changes` (재설계 스펙 머지 커밋 `953e783` 위) · 이 세션에는 TradingView가 없어
-> **CDP 의존 경로는 라이브 검증 대기** — 모든 CDP 호출은 주입 가능(deps)하게 만들고 녹화/스텁 페이로드로 단위 테스트했다.
+> 구현일 2026-09-03 · 기준 브랜치 `my-changes` (재설계 스펙 머지 커밋 `953e783` 위)
+> **2026-09-04 라이브 검증 완료** — 실제 Strategy Tester에 붙여 보니 §7의 결함들 때문에 전부 동작하지 않았다. 수정 후 종단 재검증.
 > 스펙: [phase-3-backtest.md](./phase-3-backtest.md) · [phase-4-optimize.md](./phase-4-optimize.md) · 재설계 사유: [phase-3-4-redesign-notes.ko.md](./phase-3-4-redesign-notes.ko.md) ·
 > 출처: [functional-spec-implementation.ko.md](./functional-spec-implementation.ko.md)
 
@@ -113,3 +113,51 @@
 ## 6. 구현값(고정 숫자)
 
 settle 250 ms / 3회 / 15 s(≤60 s) · `/call timeoutMs` 30 s(1–120 s) · 주문 캡 5000 · equity ≤2000 · MC n=1000 seed=42 · bootstrap 95 % · walk-forward 5창 ≥3/5 · TARGET_TRADES 30 · verdict edge/noise/insufficient(스윕: settled ≥8) · 소수 ≤3 · grid ≤64 · random 16 · halving 16→4→±1 · patience 10 · 페이싱 1000 ms · 스윕 타임아웃 60 min · 실행 타임아웃 120 s · 기본 목적함수 `multi_metric` · 뷰어 상한 100 KB · 저널 `reports/sweeps/<id>.jsonl` · 곡선 ≤60점.
+
+## 7. 라이브 검증(2026-09-04) — 무엇이 깨졌고 무엇을 고쳤나
+
+TradingView Desktop 3.4.0 · COINBASE:SOLUSD·15 · 내장 **Supertrend Strategy**로 검증했다.
+사용자의 PF 3G VP는 `indicator()`라 Strategy Tester 자체가 없어 Phase 3/4의 대상이 될 수 없다.
+
+### 7.1 전면 차단 결함 3건 (스텁으로는 절대 잡히지 않는다)
+
+| # | 증상 | 원인 | 수정 |
+|---|---|---|---|
+| 1 | `data_get_strategy_results` metric_count 0, `data_get_trades` "ordersData() returned non-array", 백테스트 trades 0 | 전략 탐색 관용구 `s.metaInfo && (s.ordersData \|\| s.reportData \|\| s.performance)`가 **모든 스터디**에 매칭된다 — Desktop 3.4에서는 Volume 지표에도 `performance`가 있고, 그것이 `dataSources()` 첫 항목이다 | `model.activeStrategySource()` → 없으면 `metaInfo().isTVScriptStrategy` 스캔. `src/core/data.js`의 `strategySourceJS()` 하나로 통일(리더 3개 + settle 서명 + 스냅샷) |
+| 2 | 전략이 없는 차트에서도 PF 3G 지표를 "전략"으로 잡아 빈 리포트 반환 | `indicator()` 스크립트에는 테스터가 없는데 이름 정규식 `/PineForge\|PF 3G/i`가 지표를 먼저 잡는다 | `chart_get_state`가 `is_strategy: true`를 실어 준다. 명시적 필터가 없으면 **플래그된 전략 우선**(런·스윕 잡·뷰어 3곳) |
+| 3 | −3.79 % 실행이 −0.0379 %로 표시 | TradingView의 모든 퍼센트가 **분수**인데 `winRate`만 ×100 했다 | `PCT_KEYS`(netProfitPct·winRate·maxDrawdownPct·avgTradePct) 일괄 스케일. TV↔재계산 대조에서 18개 중 13개가 `both`로 일치 |
+
+### 7.2 실제 페이로드 형태(스텁 가정과 다른 부분)
+
+- **지표**: `reportData().performance.{all,long,short}` 아래에 중첩 + 최상위 비율(`maxStrategyDrawDown(Percent)`, `sharpeRatio`, `sortinoRatio`, `openPL`, `buyHoldReturn`, `maxStrategyRunUp`, `maxMarginUsed`).
+- **트레이드**: `ordersData()`는 **체결(fill) 목록**(`tm`=바 인덱스)이고, 마감 트레이드는 `reportData().trades` — `{e:{c,p,tm,b,tp}, x:{…}, q, tp:{v,p}, cp:{v,p}, rn:{v,p}, dd:{v,p}, cm}`, 시각은 **밀리초**, 방향은 `e.tp`(`le/lx/se/sx`).
+- **미청산 트레이드**: 목록의 마지막 1건은 열려 있고 TradingView는 이를 `netProfit`에서 제외한다 → 우리도 지표·검증·window에서 제외하고 `card.openTrades`로만 센다.
+- **에쿼티**: `equityData()`는 **존재하지 않는다**. 곡선은 마감 트레이드 기준(`initialCapital + cp.v`)이며 이는 Overview 탭이 그리는 것과 같다.
+- **자본금**: `reportData().buyHold[0]`. 호출자가 `costs`를 주지 않으면 여기서 채운다.
+- **metaInfo 범위**: `min/max/step/options` 모두 노출된다. 단 무한 입력은 **±1e12 센티널**이라 그대로 축으로 쓰면 안 된다 → 열거 100개 초과 축은 현재값 ±50 %의 5점으로 시드한다.
+- **패널 상태와 무관하게 재계산된다**: 하단 바를 최소화(38 px)하거나 Pine 에디터를 활성 탭으로 둔 상태에서도 1.8–2.5 s에 settle. 백테스트 전 `ui_open_panel` 호출은 불필요.
+- **settle 시간**: 20여 회에서 1.5–8.0 s(중앙값 ≈ 2 s). 기본값 15 s로 충분.
+
+### 7.3 라이브에서만 드러난 결함 3건 (Phase 3/4 외부)
+
+| # | 증상 | 수정 |
+|---|---|---|
+| 4 | `/sweep/apply`가 결정의 기준 시각을 **baseline의 마지막 트레이드**로 잡는다 | 파라미터 셋마다 트레이드 주기가 다르다 — 실측에서 적용 실행의 자체 마지막 트레이드는 01:45, baseline은 00:30이었다. baseline 시계를 쓰면 **이미 관측한 트레이드가 새 증거로 계산된다**. `summarizeRun`이 각 실행의 `window`를 보존하고, apply는 **적용된 실행 자신의** 마지막 트레이드에서 자른다 |
+| 5 | `ui_open_panel`이 닫지 않고도 `performed:'closed'`를 반환(조용한 거짓말) | 이 빌드에 `bottomWidgetBar.hideWidget`이 없다. 실제 API는 `close()`(최소화)·`showWidget()`·`mode()`·`activeWidgetName()`. Pine 에디터는 하단 탭이 아니라 **떠 있는 다이얼로그**라 Monaco 가시성으로 판정하고 Close 버튼(접근성 이름 기준, Monaco에서 7단계 위)을 누른다. 모든 경로가 **요청한 상태가 됐는지 확인 후** 보고하며, 안 되면 `success:false` |
+| 6 | **입력값 하나로 전략이 영구히 죽는다** | 카테고리 입력에 옵션 라벨 대신 **인덱스(`in_2: 1`)** 를 쓰면 `setInputValues()`가 받아들이고 읽기도 그 값을 돌려주지만, 그 순간부터 `reportData()`가 **null이 되고 어떤 재계산으로도 돌아오지 않는다**(스터디를 지우고 다시 넣어야 복구). 숫자 입력에 문자열, bool에 숫자도 같은 부류. 스윕은 항상 옵션 라벨을 열거하므로 안전하지만 **강제하는 장치가 없었다** → 모든 쓰기가 지나는 `setInputs()` 한 곳에서 metaInfo로 검증하고 위반 시 **쓰기 전에 거부**(부분 적용 없음). metaInfo를 못 읽으면 "눈 감고 쓰지 않는다"며 거부한다. metaInfo는 스터디 API 객체가 아니라 **모델 소스**에 있다는 점도 여기서 드러났다 |
+
+### 7.4 종단 검증 결과
+
+| 대상 | 결과 |
+|---|---|
+| 리더 3종 | metric_count 48, 트레이드 300(마감 299 + 미청산 1), 에쿼티 299점 |
+| `strategy_run_backtest` | 오버라이드 없음 0.85 s / `in_1=4` settle 3.9 s, 복원 확인, 18개 중 13개 `both`, verdict `noise` |
+| `POST /reports` | RunCard 128 KB 저장 → 목록 → 상세(`data` 포함) → 삭제 |
+| 뷰어 Backtest 탭 | 오버라이드 추가 → 실행(settle 8.0 s) → 지표·검증·트레이드 200행·에쿼티 렌더 → 리포트 저장 후 링크 |
+| 스윕(2×2 그리드) | 4런 8 s, 저널 7행, 입력 복원 + 검증, 매트릭스·선택·verdict |
+| `/sweep/apply` → 결정 | pending 기록, 이후 같은 configHash 실행이 **resolved**(신규 1트레이드, +2 629.68, held) |
+| `/sweep/resume` | 스윕 중 브리지 SIGKILL → 재시작 → 저널의 run 2부터 재개해 4런 완주, 복원 검증, 완료된 스윕 재개는 409 |
+| 뷰어 Optimize 탭 | 20축 시드 → 2축 편집 → 실행(진행률·현재 지점 표시) → 순위표·매트릭스·오버레이·Apply → 결정 링크. 콘솔 오류 0 |
+| 입력 검증 가드 | 잘못된 4종(카테고리 인덱스·숫자에 문자열·bool에 숫자·혼합) 모두 거부, 정상 3종 통과, 이후에도 테스터 정상 계산 |
+| 최종 확인 실행 | 새로 얹은 전략에서 settle 2.0 s, 경고 0, 마감 183 + 미청산 1, TV↔재계산 13키 일치, 복원 확인 |
+| 단위 테스트 | 136 → **143** 전부 통과 |

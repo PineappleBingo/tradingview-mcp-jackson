@@ -11,7 +11,8 @@
  */
 import { createHash } from 'node:crypto';
 import { evaluate } from '../connection.js';
-import { getIndicator } from './data.js';
+import { getIndicator, mapTrades, strategySourceJS, REPORT_FLATTEN_JS } from './data.js';
+export { mapTrades };
 import { setInputs } from './indicators.js';
 import { getState as getChartState } from './chart.js';
 import { testerSignature, waitForTesterSettle } from '../wait.js';
@@ -54,109 +55,35 @@ export function configHash(config) {
   return createHash('sha1').update(JSON.stringify(canon(body))).digest('hex');
 }
 
-// ── snapshot: report + orders + equity in ONE evaluate ─────────────────────
-export const snapshotJS = (maxOrders = MAX_ORDERS, maxEquity = MAX_EQUITY_POINTS) => `
+// ── snapshot: report + trades + equity in ONE evaluate ─────────────────────
+// Shape verified live (TradingView Desktop 3.4.0, 2026-09-04): see strategySourceJS and
+// REPORT_FLATTEN_JS in ./data.js. TradingView exposes no bar-by-bar equity, so the curve is the
+// closed-trade one — initial capital + cumulative P&L at each exit, what the Overview tab plots.
+export const snapshotJS = (maxOrders = MAX_ORDERS, maxEquity = MAX_EQUITY_POINTS, entityId = null) => `
   (function() {
     try {
-      var chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
-      var sources = chart.model().model().dataSources();
-      var strat = null;
-      for (var i = 0; i < sources.length; i++) { var s = sources[i]; if (s.metaInfo && (s.ordersData || s.reportData || s.performance)) { strat = s; break; } }
-      if (!strat) return { error: 'No strategy found on chart. Add a strategy indicator first.' };
-      var unwrap = function(v) { if (v && typeof v === 'object' && typeof v.value === 'function') v = v.value(); return v; };
-      var copy = function(o, depth) {
-        if (o === null || o === undefined) return null;
-        if (typeof o === 'function') return undefined;
-        if (typeof o !== 'object') return o;
-        if (depth > 2) return undefined;
-        if (Array.isArray(o)) { if (depth > 1) return undefined; var arr = []; for (var a = 0; a < Math.min(o.length, 50); a++) { var cv = copy(o[a], depth + 1); if (cv !== undefined) arr.push(cv); } return arr; }
-        var out = {}; var ks = Object.keys(o);
-        for (var k = 0; k < ks.length; k++) { var v = copy(o[ks[k]], depth + 1); if (v !== undefined) out[ks[k]] = v; }
-        return out;
-      };
-      var rd = null;
-      try { rd = copy(unwrap(typeof strat.reportData === 'function' ? strat.reportData() : strat.reportData), 0); } catch (e) { rd = { error: e.message }; }
-      if ((!rd || !Object.keys(rd).length) && strat.performance) { try { rd = copy(unwrap(strat.performance()), 0); } catch (e) {} }
-      var orders = null;
-      try { orders = unwrap(typeof strat.ordersData === 'function' ? strat.ordersData() : strat.ordersData); } catch (e) {}
-      if (!Array.isArray(orders)) { try { orders = unwrap(typeof strat.tradesData === 'function' ? strat.tradesData() : strat.tradesData); } catch (e) {} }
-      if (!Array.isArray(orders) && strat._orders) orders = strat._orders;
-      var total = Array.isArray(orders) ? orders.length : 0;
-      var flat = [];
-      if (Array.isArray(orders)) {
-        var start = Math.max(0, orders.length - ${maxOrders});
-        for (var t = start; t < orders.length; t++) {
-          var o = orders[t]; if (!o || typeof o !== 'object') continue;
-          var trade = {}; var okeys = Object.keys(o);
-          for (var q = 0; q < okeys.length; q++) {
-            var v = o[okeys[q]];
-            if (v === null || v === undefined || typeof v === 'function') continue;
-            if (typeof v !== 'object') trade[okeys[q]] = v;
-            else if (!Array.isArray(v)) { var nk = Object.keys(v); for (var n = 0; n < nk.length; n++) { var nv = v[nk[n]]; if (nv !== null && nv !== undefined && typeof nv !== 'function' && typeof nv !== 'object') trade[okeys[q] + '_' + nk[n]] = nv; } }
-          }
-          flat.push(trade);
-        }
-      }
+      var strat = ${strategySourceJS(entityId)};
+      if (!strat) return { error: 'No strategy found on chart. Add a strategy — an indicator() script has no Strategy Tester report.' };
+      var f = (${REPORT_FLATTEN_JS})(strat, ${maxOrders});
+      var cap = typeof f.report.initialCapital === 'number' ? f.report.initialCapital : 0;
       var eq = [];
-      try {
-        var e = unwrap(typeof strat.equityData === 'function' ? strat.equityData() : strat.equityData);
-        if (Array.isArray(e)) { for (var x = 0; x < e.length; x++) { var p = e[x]; if (Array.isArray(p)) eq.push({ t: p[0], equity: p[1], dd: p[2] === undefined ? null : p[2] }); else if (p && typeof p === 'object') eq.push({ t: p.time !== undefined ? p.time : p.t, equity: p.value !== undefined ? p.value : (p.equity !== undefined ? p.equity : p.v), dd: p.drawdown !== undefined ? p.drawdown : null }); } }
-      } catch (e2) {}
-      if (!eq.length && strat.bars) {
-        try { var bars = typeof strat.bars === 'function' ? strat.bars() : strat.bars;
-          if (bars && typeof bars.lastIndex === 'function') { var end = bars.lastIndex(), st0 = bars.firstIndex(); for (var b = st0; b <= end; b++) { var bv = bars.valueAt(b); if (bv) eq.push({ t: bv[0], equity: bv[1], dd: bv[2] === undefined ? null : bv[2] }); } } } catch (e3) {}
-      }
+      for (var i = 0; i < f.trades.length; i++) { var t = f.trades[i]; if (t.open || typeof t.cp_v !== 'number') continue; eq.push({ t: t.x_tm, equity: cap + t.cp_v, dd: typeof t.dd_v === 'number' ? t.dd_v : null }); }
       var eqTotal = eq.length, downsampled = false;
       if (eq.length > ${maxEquity}) { var stride = Math.ceil(eq.length / ${maxEquity}); var ds = []; for (var y = 0; y < eq.length; y += stride) ds.push(eq[y]); if (ds[ds.length - 1] !== eq[eq.length - 1]) ds.push(eq[eq.length - 1]); eq = ds; downsampled = true; }
-      return { reportData: rd || {}, orders: flat, ordersTotal: total, equity: { points: eq, total: eqTotal, downsampled: downsampled } };
+      return { reportData: f.report, orders: f.trades, ordersTotal: f.tradesTotal, openTrades: f.openTrades, hasReport: !!(f.report && Object.keys(f.report).length), equity: { points: eq, total: eqTotal, downsampled: downsampled, source: 'closed-trade' } };
     } catch (e) { return { error: e.message }; }
   })()
 `;
 
-export async function readStrategySnapshot({ maxOrders = MAX_ORDERS, maxEquityPoints = MAX_EQUITY_POINTS } = {}) {
-  const r = await evaluate(snapshotJS(maxOrders, maxEquityPoints));
+export async function readStrategySnapshot({ maxOrders = MAX_ORDERS, maxEquityPoints = MAX_EQUITY_POINTS, entityId = null } = {}) {
+  const r = await evaluate(snapshotJS(maxOrders, maxEquityPoints, entityId));
   if (!r || r.error) throw new Error(r && r.error ? r.error : 'snapshot returned nothing');
   return r;
 }
 
-// ── trades: tolerant mapping of TradingView's flattened order objects ────────
-const pick = (o, keys) => { for (const k of keys) { if (o[k] !== undefined && o[k] !== null && o[k] !== '') return o[k]; } return undefined; };
-const toIso = (t) => {
-  if (t == null) return null;
-  let ms = typeof t === 'number' ? (t < 1e12 ? t * 1000 : t) : Date.parse(t);
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
-};
-const sideOf = (v) => {
-  if (v == null) return null;
-  const s = String(v).toLowerCase();
-  if (/short|sell/.test(s)) return 'short';
-  if (/long|buy/.test(s)) return 'long';
-  if (v === 1 || s === '1') return 'long';
-  if (v === -1 || s === '-1') return 'short';
-  return null;
-};
 const num = (v) => { const n = typeof v === 'string' ? parseFloat(v) : v; return Number.isFinite(n) ? n : undefined; };
 
-export function mapTrades(orders) {
-  const rows = (orders || []).map((o) => ({
-    side: sideOf(pick(o, ['side', 'direction', 'tradeType', 'trade_type', 'entry_type', 'entryType', 'type', 'entry_side'])),
-    entryTime: toIso(pick(o, ['entry_time', 'entryTime', 'entry_barTime', 'entry_bar_time', 'openTime', 'open_time', 'entryBarTime'])),
-    exitTime: toIso(pick(o, ['exit_time', 'exitTime', 'exit_barTime', 'exit_bar_time', 'closeTime', 'close_time', 'exitBarTime'])),
-    entryPrice: num(pick(o, ['entry_price', 'entryPrice', 'open_price', 'openPrice'])),
-    exitPrice: num(pick(o, ['exit_price', 'exitPrice', 'close_price', 'closePrice'])),
-    qty: num(pick(o, ['qty', 'quantity', 'size', 'contracts', 'entry_qty', 'exit_qty'])),
-    pnl: num(pick(o, ['profit', 'pnl', 'profit_abs', 'profit_v', 'profit_value', 'netProfit', 'net_profit'])),
-    pnlPct: num(pick(o, ['profit_percent', 'profit_pct', 'pnl_pct', 'profit_p', 'profitPercent', 'netProfitPercent'])),
-    barsHeld: num(pick(o, ['bars', 'barsHeld', 'bars_held', 'duration_bars'])),
-    entrySignal: pick(o, ['entry_signal', 'entry_name', 'entry_id', 'entryName']) ?? null,
-    exitSignal: pick(o, ['exit_signal', 'exit_name', 'exit_id', 'exitName']) ?? null,
-  })).filter((t) => t.pnl !== undefined || t.entryTime);
-  rows.sort((a, b) => (Date.parse(a.entryTime || 0) || 0) - (Date.parse(b.entryTime || 0) || 0));
-  let cum = 0;
-  return rows.map((t, i) => { cum += t.pnl || 0; return { n: i + 1, ...t, cumPnl: Math.round(cum * 100) / 100 }; });
-}
-
-// ── TradingView report keys → schema (best-effort; confirmed live at phase start) ─
+// ── TradingView report keys → schema (names confirmed live 2026-09-04; see data.js) ─
 export const TV_KEYS = {
   netProfit: ['netProfit', 'net_profit'], netProfitPct: ['netProfitPercent', 'netProfitPct', 'net_profit_percent'],
   grossProfit: ['grossProfit', 'gross_profit'], grossLoss: ['grossLoss', 'gross_loss'],
@@ -171,6 +98,8 @@ export const TV_KEYS = {
   sharpe: ['sharpeRatio', 'sharpe_ratio', 'sharpe'], sortino: ['sortinoRatio', 'sortino_ratio', 'sortino'],
 };
 const ABS_KEYS = new Set(['avgLoss', 'grossLoss', 'maxDrawdown', 'maxDrawdownPct']);
+// TradingView reports every percentage as a fraction (netProfitPercent −0.0379 = −3.79 %).
+const PCT_KEYS = new Set(['netProfitPct', 'winRate', 'maxDrawdownPct', 'avgTradePct']);
 const DD_KEYS = new Set(['maxDrawdown', 'maxDrawdownPct']);
 // Ratios are convention-bound (TradingView annualises monthly returns; ours is trade-based),
 // so a disagreement there is expected and never a mismatch: TV wins when present.
@@ -196,7 +125,7 @@ export function tvMetrics(reportData) {
       const u = unwrapTv(reportData[c]);
       if (u.all == null) continue;
       let v = u.all;
-      if (key === 'winRate' && v <= 1) { v = v * 100; } // fraction → percent
+      if (PCT_KEYS.has(key)) v = v * 100;
       if (ABS_KEYS.has(key)) v = Math.abs(v);
       if (key === 'avgLoss') v = -Math.abs(v);
       out.metrics[key] = v; out.found.push(c);
@@ -289,9 +218,18 @@ export async function runBacktest(rawConfig, deps = {}) {
   const st = await d.getChartState();
   const studies = (st && st.studies) || [];
   const re = config.study.name ? new RegExp(escapeRe(config.study.name), 'i') : DEFAULT_STUDY_RE;
+  const named = (s) => re.test(s.name || s.title || s.description || '');
+  // chart_get_state flags strategy() scripts. Without an explicit filter the default name match must
+  // not land on the PF 3G *indicator* (live chart, 2026-09-04): PF 3G only when it is a strategy, else
+  // any strategy. A state without flags (older build) keeps the plain name match.
+  const flagged = studies.some((s) => s.is_strategy);
   const study = studies.find((s) => config.study.entityId && (s.id === config.study.entityId || s.entity_id === config.study.entityId))
-    || studies.find((s) => re.test(s.name || s.title || s.description || ''));
-  if (!study) return { success: false, error: `strategy study not found on chart (looked for ${config.study.name || 'PineForge|PF 3G'})` };
+    || (config.study.name ? studies.find(named)
+      : flagged ? (studies.find((s) => s.is_strategy && named(s)) || studies.find((s) => s.is_strategy)) : studies.find(named));
+  if (!study) {
+    const strats = studies.filter((s) => s.is_strategy).map((s) => s.name);
+    return { success: false, error: `strategy study not found on chart (looked for ${config.study.name || 'PineForge|PF 3G, then any strategy'}; strategies on chart: ${strats.length ? strats.join(', ') : 'none — an indicator() script has no Strategy Tester'})` };
+  }
   const entityId = study.id || study.entity_id;
   config.study = { entityId, name: study.name || study.title || config.study.name };
   config.symbol = config.symbol || st.symbol || null;
@@ -310,11 +248,11 @@ export async function runBacktest(rawConfig, deps = {}) {
   let settled = true, settleMs = 0, settleInfo = null;
   if (ids.length && !changed.length) warnings.push('no_change');
   if (changed.length) {
-    const before = await d.testerSignature();
+    const before = await d.testerSignature(entityId);
     const apply = Object.fromEntries(changed.map((id) => [id, config.inputs[id]]));
     const res = await d.setInputs({ entity_id: entityId, inputs: apply });
     for (const id of changed) if (!(res && res.updated_inputs && id in res.updated_inputs)) warnings.push('inputs_not_applied:' + id);
-    settleInfo = await d.waitForTesterSettle({ before, ...config.settle });
+    settleInfo = await d.waitForTesterSettle({ before, ...config.settle, signature: () => d.testerSignature(entityId) });
     settled = !!settleInfo.settled; settleMs = settleInfo.settleMs || 0;
     if (!settled) warnings.push('unsettled');
   }
@@ -322,17 +260,25 @@ export async function runBacktest(rawConfig, deps = {}) {
   const restore = { requested: !!config.restore, restored: false, changed, error: null };
   try {
     // 3. one consistent snapshot, then normalise and validate
-    const snap = await d.readStrategySnapshot({ maxOrders: MAX_ORDERS, maxEquityPoints: MAX_EQUITY_POINTS });
+    const snap = await d.readStrategySnapshot({ maxOrders: MAX_ORDERS, maxEquityPoints: MAX_EQUITY_POINTS, entityId });
     const trades = mapTrades(snap.orders || []);
+    // TradingView lists the still-open trade but keeps it out of netProfit; so do we.
+    const closed = trades.filter((t) => !t.open);
     if (snap.ordersTotal > (snap.orders || []).length) warnings.push('trades_truncated');
     const equity = snap.equity || { points: [], total: 0, downsampled: false };
     if (!equity.points || !equity.points.length) warnings.push('no_equity');
-    const norm = normalizeMetrics(snap.reportData, trades, config.costs);
+    // reportData() absent entirely: the tester has NOT computed (blank "requires trade data"
+    // panel). Distinct from a strategy that computed and simply took no trades.
+    if (snap.hasReport === false) warnings.push('no_report');
+    // Percent metrics need the account size; the report carries it (buyHold[0]) when the caller did not.
+    const costs = config.costs && config.costs.initialCapital != null ? config.costs
+      : { ...(config.costs || {}), initialCapital: typeof (snap.reportData || {}).initialCapital === 'number' ? snap.reportData.initialCapital : null };
+    const norm = normalizeMetrics(snap.reportData, closed, costs);
     for (const w of norm.warnings) if (!warnings.includes(w)) warnings.push(w);
-    const validation = validate(trades, { splitDate: config.splitDate, initialCapital: config.costs && config.costs.initialCapital, settled });
+    const validation = validate(closed, { splitDate: config.splitDate, initialCapital: costs.initialCapital, settled });
     const card = {
       schemaVersion: SCHEMA_VERSION, id: newId(), createdAt: new Date(startedAt).toISOString(), kind: 'backtest',
-      config, settled, settleMs, warnings, window: windowOf(trades),
+      config, costs, settled, settleMs, warnings, window: windowOf(closed), openTrades: trades.length - closed.length,
       metrics: norm.metrics, metricSources: norm.metricSources, computedMetrics: norm.computed, tvRaw: snap.reportData || {},
       trades, equity, validation, restore, elapsedMs: d.now() - startedAt,
     };

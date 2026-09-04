@@ -53,16 +53,33 @@ const typeOf = (m) => {
   return null;
 };
 
-/** Seed parameters from metaInfo inputs — only those with options or numeric bounds. */
+/**
+ * Seed parameters from metaInfo inputs: options, bools, and numerics. TradingView fills an
+ * unbounded numeric input with ±1e12 sentinels (verified live, Desktop 3.4), and a nominal
+ * bound like pyramiding 0..1e6 is useless as an axis, so anything that would not enumerate
+ * to ≤ 100 values gets five points around its current value instead.
+ */
+const SENTINEL = 1e9, MAX_SEED_VALUES = 100;
 export function seedFromMeta(metaInputs) {
   const out = [];
   for (const m of metaInputs || []) {
     if (!m || !/^in_/.test(m.id || '')) continue;
     const type = typeOf(m);
     if (!type) continue;
-    if (type === 'categorical') out.push({ id: m.id, label: m.name, type, values: m.options.slice(), source: 'metaInfo', current: m.cur ?? m.def ?? m.defval });
-    else if (type === 'bool') out.push({ id: m.id, label: m.name, type, values: [true, false], source: 'metaInfo', current: m.cur ?? m.def ?? m.defval });
-    else if (m.min != null && m.max != null) out.push({ id: m.id, label: m.name, type, min: Number(m.min), max: Number(m.max), step: m.step != null ? Number(m.step) : undefined, source: 'metaInfo', current: m.cur ?? m.def ?? m.defval });
+    const cur = m.cur ?? m.def ?? m.defval;
+    const base = { id: m.id, label: m.name, type, source: 'metaInfo', current: cur };
+    if (type === 'categorical') { out.push({ ...base, values: m.options.slice() }); continue; }
+    if (type === 'bool') { out.push({ ...base, values: [true, false] }); continue; }
+    const min = Number(m.min), max = Number(m.max), step = m.step != null ? Number(m.step) : undefined;
+    const bounded = Number.isFinite(min) && Number.isFinite(max) && Math.abs(min) < SENTINEL && Math.abs(max) < SENTINEL && max > min;
+    const count = bounded ? (max - min) / (Number.isFinite(step) && step > 0 ? step : (type === 'int' ? 1 : (max - min) / 10)) : Infinity;
+    if (count <= MAX_SEED_VALUES) { out.push({ ...base, min, max, step }); continue; }
+    const c = Number(cur);
+    if (!Number.isFinite(c) || c === 0) continue;
+    // ponytail: ±50 % around the current value in 5 steps; a real range belongs in the profile shortlist
+    const dec = type === 'int' ? 0 : Math.min(MAX_DECIMALS, decimalsOf(Number.isFinite(step) && step > 0 ? step : c));
+    const values = [...new Set([0.5, 0.75, 1, 1.25, 1.5].map((f) => roundTo(c * f, dec)))];
+    if (values.length > 1) out.push({ ...base, values });
   }
   return out;
 }

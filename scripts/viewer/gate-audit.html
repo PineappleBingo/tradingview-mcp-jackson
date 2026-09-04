@@ -542,11 +542,14 @@ async function shotText() {
 // labels/groups/defaults only from metaInfo — join them on id.
 // Also carries min/max/step/options (Phase 4 seeds the parameter space from them) and the
 // Pine version. Whether TradingView exposes the numeric bounds is a live open question.
-const META_JS = "(()=>{try{const w=window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;"
+// metaJs(id) reads one study's metaInfo by entity id; without an id it falls back to the PF 3G
+// name match. Version comes from mi.pine.version — mi.version is the metainfo SCHEMA version.
+const metaJs = (id) => "(()=>{try{const w=window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;const want=" + JSON.stringify(id || '') + ";"
   + "const ds=w.model().model().dataSources();for(const s of ds){const mi=s.metaInfo&&s.metaInfo();if(!mi)continue;"
-  + "const n=mi.description||mi.shortDescription||'';if(!/PineForge|PF 3G/i.test(n))continue;"
-  + "return JSON.stringify({v:mi.pineVersion||mi.version||null,inputs:(mi.inputs||[]).map(i=>({id:i.id,name:i.name,type:i.type,group:i.group,def:i.defval,min:i.min,max:i.max,step:i.step,options:i.options}))})}"
+  + "const n=mi.description||mi.shortDescription||'';if(want?!(typeof s.id==='function'&&s.id()===want):!/PineForge|PF 3G/i.test(n))continue;"
+  + "return JSON.stringify({v:(mi.pine&&mi.pine.version)||mi.pineVersion||null,inputs:(mi.inputs||[]).map(i=>({id:i.id,name:i.name,type:i.type,group:i.group,def:i.defval,min:i.min,max:i.max,step:i.step,options:i.options}))})}"
   + "return '{\"inputs\":[]}'}catch(e){return 'ERR '+e.message}})()";
+const META_JS = metaJs('');
 const parseMeta = (raw) => { try { const m = JSON.parse(raw); return Array.isArray(m) ? { v: null, inputs: m } : m; } catch { return null; } };
 async function settingsText() {
   const st = await call('chart_get_state', {});
@@ -554,7 +557,7 @@ async function settingsText() {
   if (!study) return 'the PF 3G VP strategy is not on this chart';
   const [ind, metaRaw] = await Promise.all([
     call('data_get_indicator', { entity_id: study.id || study.entity_id }),
-    call('ui_evaluate', { expression: META_JS }),
+    call('ui_evaluate', { expression: metaJs(study.id || study.entity_id) }),
   ]);
   const pm = parseMeta(metaRaw.result); const meta = pm ? pm.inputs : null;
   if (!meta) return 'could not read input labels: ' + metaRaw.result;
@@ -1025,11 +1028,13 @@ async function btInit() {
   btBusy = true;
   try {
     const st = await call('chart_get_state', {});
-    btStudy = (st.studies || []).find((s) => /PineForge|PF 3G/i.test(s.name || '')) || null;
-    $('#btStudy').textContent = btStudy ? btStudy.name : 'PF 3G VP strategy not on this chart';
+    // Only a strategy() script has a Strategy Tester: prefer PF 3G when it is one, else any strategy.
+    const studies = st.studies || [];
+    btStudy = studies.find((s) => s.is_strategy && /PineForge|PF 3G/i.test(s.name || '')) || studies.find((s) => s.is_strategy) || null;
+    $('#btStudy').textContent = btStudy ? btStudy.name : 'no strategy on this chart — an indicator() script has no Strategy Tester';
     $('#btChart').textContent = (st.symbol || '?') + ' · ' + (st.resolution || '?');
     if (!btStudy) return;
-    const [ind, metaRaw] = await Promise.all([call('data_get_indicator', { entity_id: btStudy.id || btStudy.entity_id }), call('ui_evaluate', { expression: META_JS })]);
+    const [ind, metaRaw] = await Promise.all([call('data_get_indicator', { entity_id: btStudy.id || btStudy.entity_id }), call('ui_evaluate', { expression: metaJs(btStudy.id || btStudy.entity_id) })]);
     const pm = parseMeta(metaRaw.result);
     const vals = new Map((ind.inputs || []).map((i) => [i.id, i.value]));
     btMeta = (pm && pm.inputs ? pm.inputs : []).filter((m) => /^in_/.test(m.id) && m.type !== 'color').map((m) => ({ ...m, cur: vals.get(m.id) }));
@@ -1145,7 +1150,7 @@ async function opInit() {
     opShort = plan.space ? plan.space.params : [];
     const sel = $('#opPick'); sel.innerHTML = '<option value="">+ add parameter…</option>';
     opShort.forEach((p) => { const o = document.createElement('option'); o.value = p.id; o.textContent = p.label + '  [' + p.values.join(', ') + ']'; sel.appendChild(o); });
-    $('#opAvail').textContent = opShort.length ? opShort.length + ' in the profile shortlist' : ('shortlist unavailable' + (plan.error ? ': ' + plan.error : ''));
+    $('#opAvail').textContent = opShort.length ? opShort.length + (plan.source === 'metaInfo' ? ' seeded from this strategy\'s inputs — edit the value lists' : ' in the profile shortlist') : ('shortlist unavailable' + (plan.error ? ': ' + plan.error : ''));
     pollSweep(true);
   } catch (e) { $('#opAvail').textContent = 'could not prepare: ' + e.message; }
   finally { opBusy = false; opEstimate(); }
@@ -1177,7 +1182,7 @@ $('#opSampler').onchange = opEstimate;
 async function opRun() {
   const sp = opSpace(); if (!sp.params.length) return;
   const cap = Number($('#opCap').value) || null;
-  const body = { space: sp, objective: $('#opObj').value, splitDate: $('#opSplit').value ? $('#opSplit').value + 'T00:00:00Z' : null, costs: cap ? { initialCapital: cap } : null,
+  const body = { space: sp, study: btStudy ? btStudy.name : undefined, objective: $('#opObj').value, splitDate: $('#opSplit').value ? $('#opSplit').value + 'T00:00:00Z' : null, costs: cap ? { initialCapital: cap } : null,
     title: 'sweep · ' + sp.params.map((p) => p.label).join(' × ') + ' · ' + $('#opObj').value };
   try {
     const res = await fetch('/sweep', { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth() }, body: JSON.stringify(body) });
@@ -1195,7 +1200,7 @@ async function pollSweep(reattach) {
   const st = $('#opState');
   if (j.state === 'running') {
     st.className = 'pill'; st.textContent = 'running ' + j.done + '/' + j.total + ' · ' + mmss(j.elapsedMs) + (j.expectedMs ? ' of ~' + mmss(j.expectedMs) : '');
-    $('#opCur').textContent = j.current ? (j.current.index < 0 ? 'baseline' : '#' + j.current.index + ' ' + Object.entries(j.current.inputs).map(([k, v]) => ((btMeta && (btMeta.find((m) => m.id === k) || {}).name) || k) + '=' + v).join(', ')) : 'restoring inputs…';
+    $('#opCur').textContent = j.current ? (j.current.index < 0 ? 'baseline' : '#' + j.current.index + ' ' + Object.entries(j.current.inputs).map(([k, v]) => ((btMeta && (btMeta.find((m) => m.id === k) || {}).name) || k) + '=' + v).join(', ')) : (j.baseline ? 'restoring inputs…' : 'preparing — reading the chart and its current inputs');
     return;
   }
   clearInterval(opTimer); opTimer = null; $('#opRun').disabled = false; opEstimate();

@@ -23,7 +23,8 @@
  *   GET  /reports[/:id], DELETE /reports/:id → saved analysis reports (reports/*.json)
  *   POST /reports → { type: backtest|sweep|decision, title, summary?, body_md, data? } → { id }
  *                   (Phase 3: the viewer saves RunCards into the SAME report store)
- *   POST /sweep   → { space, objective?, splitDate?, title?, costs? } → { id, total, expectedMs }
+ *   POST /sweep   → { space, objective?, splitDate?, title?, costs?, study? } → { id, total, expectedMs }
+ *                   (study = name substring; default PF 3G, else the first strategy() on the chart)
  *                   runs strategy_run_backtest per parameter point IN-PROCESS, journals to
  *                   reports/sweeps/<id>.jsonl, restores the inputs, writes a type:'sweep' report.
  *                   One chart-mutating job at a time: 409 while an agent run OR a sweep is active.

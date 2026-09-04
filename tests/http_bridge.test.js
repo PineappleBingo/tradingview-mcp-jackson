@@ -399,6 +399,11 @@ test('sweep cancel restores the original inputs and reports cancelled; apply wri
   assert.match(did, /^dc-/); assert.equal(applied.in_3, 'Soft Filter'); assert.equal(applied.in_7, 0.25);
   const dec = await (await fetch(base + '/reports/' + did, { headers: H2 })).json();
   assert.equal(dec.type, 'decision'); assert.equal(dec.data.status, 'pending'); assert.equal(dec.data.sweepReportId, sw.id);
+  const swRep = await (await fetch(base + '/reports/' + sw.id, { headers: H2 })).json();
+  const applied1 = swRep.data.results.find((r) => r.index === 1);
+  assert.ok(applied1.window && applied1.window.lastTradeTime, 'each journal result carries its own window');
+  assert.equal(dec.data.lastTradeTime, applied1.window.lastTradeTime, 'the decision is cut at the APPLIED run\'s last trade');
+  assert.notEqual(dec.data.lastTradeTime, swRep.data.windowEnd, 'not at the baseline\'s');
   const ind = await (await call('data_get_indicator', { entity_id: 'pf1' })).json();
   assert.equal(ind.inputs.find((i) => i.id === 'in_7').value, 0.25, 'apply set the chart inputs');
   assert.equal((await fetch(base + '/sweep/apply', { method: 'POST', headers: H2, body: JSON.stringify({ id: sw.id, index: 99 }) })).status, 404);

@@ -27,14 +27,17 @@ test('graphics filter is escaped and case-insensitive', () => {
   assert.ok(coreSource.includes('name.toLowerCase().indexOf(filter)'), 'study name compared case-insensitively');
 });
 
-test('strategy detection no longer requires is_price_study === false', () => {
+test('strategy readers share one locate idiom: activeStrategySource, then metaInfo().isTVScriptStrategy', () => {
   assert.ok(!coreSource.includes('is_price_study === false'), 'overlay=true strategies must be detectable');
-  const matches = coreSource.match(/s\.metaInfo && \(s\.ordersData \|\| s\.reportData \|\| s\.performance\)/g) || [];
-  assert.equal(matches.length, 3, 'all three strategy readers use presence-based detection');
+  // Desktop 3.4 gives EVERY study a `performance` watched value; the old presence scan picked the Volume indicator.
+  assert.equal((coreSource.match(/s\.metaInfo && \(s\.ordersData \|\| s\.reportData \|\| s\.performance\)/g) || []).length, 0, 'presence-based scan is gone');
+  assert.equal((coreSource.match(/\$\{strategySourceJS\(\)\}/g) || []).length, 3, 'all three strategy readers use strategySourceJS');
+  assert.match(coreSource, /activeStrategySource/); assert.match(coreSource, /isTVScriptStrategy/);
 });
 
 test('trades keep nested entry/exit scalars via one-level flatten', () => {
-  assert.ok(coreSource.includes("trade[okeys[k] + '_' + nkeys[n]] = nv"), 'nested objects flatten to key_subkey scalars');
+  assert.ok(coreSource.includes("tr[ks[q] + '_' + nk[n]] = nv"), 'nested objects flatten to key_subkey scalars (REPORT_FLATTEN_JS)');
+  assert.equal((coreSource.match(/\$\{REPORT_FLATTEN_JS\}/g) || []).length, 3, 'all three readers flatten through the shared function');
   assert.ok(coreSource.includes('const MAX_TRADES = 200'), 'trade ceiling raised (request default stays 20)');
 });
 

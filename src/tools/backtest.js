@@ -44,13 +44,21 @@ export function registerBacktestTools(server) {
         const p = loadProfile(profile);
         let list = (p.optimize && p.optimize.shortlist) || [];
         if (shortlist_labels) { const want = JSON.parse(shortlist_labels).map((l) => String(l).toLowerCase()); list = list.filter((x) => want.includes(x.label.toLowerCase())); }
-        raw.params = resolveLabels(list, meta);
+        try { raw.params = resolveLabels(list, meta); raw.source = 'profile'; }
+        catch (e) {
+          // Not the profile's strategy (or its inputs were renamed): seed every input from metaInfo.
+          raw.params = seedFromMeta(meta); raw.source = 'metaInfo';
+          raw.note = 'profile shortlist does not fit this study (' + e.message + ') — seeded from the study inputs instead';
+          if (!raw.params.length) return jsonResult({ success: false, error: raw.note + '; nothing seedable' }, true);
+        }
         raw.seeded = seedFromMeta(meta).length;
       }
+      // A seeded grid can dwarf the cap; the viewer's picker only needs the axes, so plan it as random.
+      if (raw.source === 'metaInfo' && !(raw.sampler && raw.sampler.kind)) raw.sampler = { kind: 'random' };
       const sp = normalizeSpace(raw);
       const plan = planSpace(sp, { settleMs: settle_ms || 20000, paceMs: sp.pace_ms });
       const points = sp.sampler.kind === 'grid' ? expandGrid(sp) : sp.sampler.kind === 'random' ? sampleRandom(sp) : halvingPlan(sp).stage1;
-      return jsonResult({ success: true, space: sp, plan, points, objectives: listObjectives() });
+      return jsonResult({ success: true, source: raw.source || 'user', ...(raw.note ? { note: raw.note } : {}), space: sp, plan, points, objectives: listObjectives() });
     } catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 }
