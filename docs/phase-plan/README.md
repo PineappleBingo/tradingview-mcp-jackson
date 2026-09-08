@@ -19,6 +19,15 @@ was added along the way, so the viewer now has five tabs).
 | [3.5](./phase-3.5-bias-checks.md) | Bias checks — repaint/lookahead via replay, history sensitivity | 📋 optional | — |
 | [4](./phase-4-optimize.md) | Optimize tab — typed parameter space, objective registry, resumable bridge sweep job, verdict + decision log (4b What-if · 4c multi-symbol still planned) | ✅ shipped · verified live 2026-09-04 | `6fa737f` `777521a` `389e4ae` `ff282e0` + live fixes |
 
+**Report follow-up 2026-09-08**: a finished analysis was a dead end — the Reports tab had only
+*back* and *delete*. `src/core/whatif.js` + `strategy_gate_whatif` now replay a proposed rule
+over the gate-audit history (no chart mutation, no re-run), which is the **only** verification
+available for PF 3G VP since an `indicator()` has no Strategy Tester. The viewer's *open report*
+chip carries a report and its original context into a follow-up run; the *verify + Pine prompt*
+preset tiers each recommendation VERIFIED / UNVERIFIABLE and emits one copy-ready block. This
+also shipped [4b](./phase-4-optimize.md#4b-what-if-panel)'s engine, so that panel is now a thin
+client over the tool.
+
 **Redesign 2026-09-03** (Phase 3/4 reviewed against the code and against ten open-source
 trading repos): [what changed, how and why](./phase-3-4-redesign-notes.ko.md) ·
 [which pattern came from which repo, and what was left out](./functional-spec-sources.ko.md).

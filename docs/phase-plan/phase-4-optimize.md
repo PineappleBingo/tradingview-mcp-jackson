@@ -196,9 +196,20 @@ for two rounds, then to judge **Adopt / Hold (insufficient evidence) / Reject**,
 arguments on merit independent of order. Two rounds is the counter-based terminator
 (`count ≥ 2 × max_debate_rounds`); the three-way risk debate is deliberately not ported.
 
-## 4b. What-if panel (Audit tab, right of Blockers — designed in Main.dc.html, never built)
+## 4b. What-if panel (Audit tab, right of Blockers — designed in Main.dc.html, panel not built)
 
-Unchanged from the first plan: pure client-side, zero re-runs. The pass mask already encodes
+**The engine shipped 2026-09-08, headless**: `src/core/whatif.js` + the `strategy_gate_whatif`
+tool. It generalizes what this section specced — 4b flips a whole gate, the module evaluates an
+arbitrary predicate over the per-bar `metrics`, and "treat gate X as pass" is one rule shape
+(`{kind:'relax', gates:[...]}`) beside the `{kind:'require', pred}` shape that verifies a
+proposed change. Verified live: `relax RoomS` unblocks 11 bars, matching the Audit tab's
+blocker histogram exactly.
+
+So the *panel* is now a thin client, not a re-spec: the viewer already has `call()` hitting the
+bridge's `POST /call` MCP proxy, so it calls the tool rather than duplicating the evaluator into
+the HTML. The ±% forward-return column is still unbuilt.
+
+Original plan, unchanged: pure client-side, zero re-runs. The pass mask already encodes
 every gate per bar, so "treat gate X as pass" is re-filtering `data.verdicts`
 (`failedGates`/`sideFailedGates`) and showing which bars flip FIRED↔BLOCKED. The ±% outcome
 column joins forward returns from `data_get_ohlcv` (also enables the artboard's +60m column

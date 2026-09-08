@@ -202,9 +202,11 @@ test('viewer file is small and fully self-contained', () => {
   // It exists to catch an inlined library or a base64 asset, not to freeze the feature
   // set — the self-containment assertions below are the load-bearing ones. Raise it
   // deliberately per phase; do not bump it just to make a commit pass.
-  // 70 KB covered Phase 2.1 (Alerts tab). 84 KB covered Phase 3 (Backtest tab). 100 KB covers
-  // Phase 4 (Optimize tab: space composer, sweep progress, overlay, matrix, apply).
-  assert.ok(statSync(VIEWER).size < 100 * 1024, 'viewer must stay under 100 KB');
+  // 70 KB covered Phase 2.1 (Alerts tab). 84 KB covered Phase 3 (Backtest tab). 100 KB covered
+  // Phase 4 (Optimize tab: space composer, sweep progress, overlay, matrix, apply). 104 KB
+  // covers the report follow-up: the "open report" chip, the verify+Pine-prompt agent preset,
+  // and copy-to-clipboard on rendered code blocks.
+  assert.ok(statSync(VIEWER).size < 104 * 1024, 'viewer must stay under 104 KB');
   const html = readFileSync(VIEWER, 'utf8');
   assert.ok(!/<script[^>]+src=/i.test(html), 'no external scripts');
   assert.ok(!/<link[^>]+href=/i.test(html), 'no external stylesheets');

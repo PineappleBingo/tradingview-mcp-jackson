@@ -595,6 +595,11 @@ const PRESETS = [
   { id: 'settings', label: 'strategy settings', kind: 'js', text: settingsText },
   { id: 'backtest', label: 'last backtest', kind: 'js', text: async () => lastCard ? lastCard.body_md : 'no backtest run yet — open the Backtest tab and run one' },
   { id: 'sweep', label: 'last sweep', kind: 'js', text: async () => opRep ? opRep.body_md : 'no sweep yet — open the Optimize tab and run one' },
+  { id: 'report', label: 'open report', kind: 'js',
+    text: async () => lastReport
+      ? '# ' + lastReport.title + '\n\n' + (lastReport.body_md || '')
+        + '\n\n--- the original prompt and context that produced this report ---\n' + (lastReport.prompt || '')
+      : 'no report open — open one in the Reports tab first, then attach this chip' },
   { id: 'worst', label: 'worst blocker', kind: 'js', text: blockerHistText,
     onShow: () => { const t = topBlocker(); if (t) { filterBlocker = t[0]; drawHist(); drawTable(); showTab('audit'); } } },
   { id: 'f-analyze', label: 'analyze entries', kind: 'fill',
@@ -617,6 +622,15 @@ const PRESETS = [
     template: 'Judge the attached sweep. Use two Task subagents for two rounds: BULL argues the selected parameters are real edge; BEAR argues curve-fit, citing stability, the out-of-sample check, the p-value and the trade count. Then, weighing the arguments on their merits and independent of order, rule ADOPT, HOLD (insufficient evidence) or REJECT, and say what one more test would settle it. Start your answer with the ruling in one line.' },
   { id: 'a-review-bt', label: 'review backtest', kind: 'agent', attach: ['backtest'], model: 'sonnet',
     template: 'Review the attached backtest run card as a performance analyst: profitability, consistency, risk and edge quality. Say whether the computed verdict is justified by the p-value, the IS/OOS split and the walk-forward windows, and give three concrete input changes to test next. Start your answer with a 3-5 line summary.' },
+  { id: 'a-verify-recs', label: 'verify + Pine prompt', kind: 'agent', attach: ['report'], model: 'opus',
+    template: 'The attachment is a finished analysis plus the full original context that produced it (including any chart screenshot path — Read it if you need to see the chart). Turn its recommendations into a verified change request.\n\n'
+      + '1. List every recommendation it makes as a discrete claim.\n'
+      + '2. Classify each. THRESHOLD if it can be written as a single-bar condition over gate-audit metrics; STRUCTURAL otherwise.\n'
+      + '3. For each THRESHOLD claim call strategy_gate_whatif with the rule and at_iso set to the bar the report is about. Read the tool description for the rule grammar and for what it cannot express.\n'
+      + '4. NEVER invent a proxy rule and present it as testing the real recommendation. If the claim needs cross-bar state, an unplotted value, new Pine logic or a P&L outcome, it is STRUCTURAL — say so and say what single test would settle it.\n'
+      + '5. Report only flips you actually measured, with the window the tool replayed against. A verdict of insufficient is not a pass.\n\n'
+      + 'Then output exactly these sections: a 3-5 line summary paragraph; "## Verified" (table: recommendation, rule, entries before to after, did the bar under review flip, verdict); "## Unverifiable" (table: recommendation, why, what would settle it); "## Pine prompt" containing ONE fenced code block and nothing else in that section.\n\n'
+      + 'The fenced block is a self-contained instruction for a separate Pine editing session that can see none of this conversation. It must name the script and version, the exact input labels to change with current and proposed values, one line of measured evidence per change, and the unverifiable items restated as open questions rather than instructions. Use no backticks inside it.' },
 ];
 
 // toggle: click on → run text() into a keyed panel; click again → panel gone.
@@ -997,11 +1011,14 @@ async function loadReports() {
     });
   } catch (e) { L.innerHTML = '<div class="placeholder">failed to load reports</div>'; }
 }
+// The open report, so the "open report" chip can carry it into a follow-up run.
+let lastReport = null;
 async function openReport(id) {
   $('#repList').hidden = true; const D = $('#repDetail'); D.hidden = false; D.innerHTML = '<div class="placeholder">loading…</div>';
   try {
     const r = await (await fetch('/reports/' + encodeURIComponent(id), { headers: auth() })).json();
     if (r.error) throw new Error(r.error);
+    lastReport = r;
     D.innerHTML = '';
     const top = document.createElement('div'); top.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px';
     top.innerHTML = '<span class="k"></span><span><button class="rep-back">← all reports</button> <button class="rep-del">delete</button></span>';
@@ -1009,6 +1026,12 @@ async function openReport(id) {
       + (r.context && r.context.length ? ' · context: ' + r.context.join(', ') : '');
     D.appendChild(top);
     const body = document.createElement('div'); body.className = 'md'; body.innerHTML = md(r.body_md || ''); D.appendChild(body);
+    // The point of a generated Pine prompt is to paste it; drag-selecting 40 lines is the dead end again.
+    body.querySelectorAll('pre').forEach((pre) => {
+      const b = document.createElement('button'); b.textContent = 'copy'; b.style.cssText = 'float:right;margin:2px';
+      b.onclick = () => { navigator.clipboard.writeText(pre.textContent); b.textContent = 'copied'; };
+      pre.before(b);
+    });
     const det = document.createElement('details'); det.style.marginTop = '10px';
     det.innerHTML = '<summary class="k" style="cursor:pointer">prompt that produced this</summary><pre style="white-space:pre-wrap;color:var(--ink2);font-size:12px"></pre>';
     det.querySelector('pre').textContent = r.prompt || '';
