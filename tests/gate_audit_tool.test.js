@@ -61,3 +61,20 @@ test('runGateAudit passes overrides through and tolerates a failing chart_get_st
   assert.equal(out.chart, null);
   assert.equal(out.success, true);
 });
+
+test('strategy_gate_whatif is registered and refuses a malformed rule instead of throwing', async () => {
+  const tools = new Map();
+  registerGateAuditTools({ tool: (name, desc, schema, handler) => tools.set(name, { desc, schema, handler }) });
+  assert.ok(tools.has('strategy_gate_whatif'));
+  const { schema, desc, handler } = tools.get('strategy_gate_whatif');
+  assert.deepEqual(Object.keys(schema).sort(), ['at_iso', 'count', 'profile', 'rule', 'study_filter']);
+  assert.match(desc, /counterfactual/i);
+  // The description has to state the limits, or the model will approximate past them.
+  assert.match(desc, /cross-bar state/i);
+
+  // Bad JSON never reaches the chart, so this needs no deps.
+  const bad = await handler({ rule: '{not json' });
+  const parsed = JSON.parse(bad.content[0].text);
+  assert.equal(parsed.success, false);
+  assert.match(parsed.error, /not valid JSON/);
+});

@@ -10,6 +10,7 @@ export * as validate from './validate.js';
 export * as paramspace from './paramspace.js';
 export * as objectives from './objectives.js';
 export * as sweep from './sweep.js';
+export * as whatif from './whatif.js';
 export * as pine from './pine.js';
 export * as health from './health.js';
 export * as capture from './capture.js';

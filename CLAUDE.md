@@ -1,6 +1,6 @@
 # TradingView MCP — Claude Instructions
 
-86 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
+87 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
 
 ## Branch Rule — read first
 
@@ -13,7 +13,7 @@ confirm before doing it.)
 
 ## Environment note
 
-The MCP server connects to `localhost:9222`, so **all 86 tools require TradingView Desktop
+The MCP server connects to `localhost:9222`, so **all 87 tools require TradingView Desktop
 running on the same machine**. In a cloud session (`claude --cloud`) there is no chart and
 every tool fails. To use the web UI with a live chart, prefer `claude --remote-control` (runs
 locally, steered from the browser), or expose the HTTP bridge through a tunnel as described in
@@ -42,6 +42,23 @@ Use `study_filter` parameter to target a specific indicator by name substring (e
 2. `data_get_pine_tables` → the strategy's telemetry table (e.g., PF-TLM rows) verbatim
 3. `data_get_pine_labels` → blocked-entry labels (e.g., "X8·MAC" = pattern 8 blocked by the macro gate)
 4. Decode masks / short codes with the strategy repo's `docs/mcp-debug-workflow.md`, or invoke the `strategy-gate-debug` skill for the full loop
+
+### "Would this change have blocked that entry?" (verifying a recommendation)
+`strategy_gate_whatif` replays a proposed rule over the gate-audit history without touching the
+chart, and returns the bars it would have changed. **This is the only verification available for
+an `indicator()`** — PF 3G VP has no Strategy Tester, so `strategy_run_backtest` and the sweep
+have nothing to read for it.
+
+- `{"kind":"require","pred":{…}}` → an extra condition entries must meet (FIRED → BLOCKED)
+- `{"kind":"relax","gates":["RoomL"]}` → treat those gates as passing (BLOCKED → FIRED); a bar
+  unblocks only when *every* gate that failed on it is listed
+- `pred` compares one bar's audited metrics: `{"metric":"roomPct","op":"gte","value":{"metric":"reqPct","mul":0.7}}`,
+  combined with `all` / `any` / `not`. Pass `at_iso` to ask whether one specific bar flipped.
+
+It cannot express cross-bar state (streaks, cooldowns), anything not plotted in the profile's
+audit columns, anything needing new Pine logic, or anything about the outcome (P&L). Say a
+recommendation is **unverifiable** rather than approximating it with a proxy rule. A rule that is
+`na` on most bars comes back `insufficient`, not proven.
 
 ### "Backtest or optimize my strategy" (Phase 3/4)
 
