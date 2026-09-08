@@ -215,7 +215,10 @@ const pickModel = (m) => MODELS.includes(m) ? m : DEFAULT_MODEL;
 // Task lets the run delegate a large tool payload to a subagent that returns a digest —
 // the skill decides when that is worth it. A subagent inherits this same allowlist, so
 // this adds instances, not permissions. Never --dangerously-skip-permissions.
-const AGENT_TOOLS = ['mcp__tradingview', 'Read', 'Grep', 'Glob', 'Task'];
+// File writes are scoped to reports/ (an Edit rule covers Write too — the CLI rejects
+// Write(...) rules). The run's answer is archived there as JSON anyway, so a
+// markdown file next to it is the same blast radius. Anywhere else stays read-only.
+const AGENT_TOOLS = ['mcp__tradingview', 'Read', 'Grep', 'Glob', 'Task', 'Edit(reports/**)'];
 
 // Progress baseline: the median of past runs for this model. A model cannot know how much
 // work remains, so the viewer's bar is elapsed against lived experience — and says so.
