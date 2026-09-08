@@ -1,0 +1,268 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Sweep parameters and decide",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "user-steps",
+        "label": "What you actually click",
+        "focus": [
+          "compose",
+          "start",
+          "apply"
+        ],
+        "note": "Compose the space, start the job, then decide whether to adopt its winner."
+      },
+      {
+        "id": "the-job",
+        "label": "What the job does",
+        "focus": [
+          "baseline",
+          "points",
+          "restore",
+          "select"
+        ],
+        "note": "A baseline, one backtest per point, inputs always put back, then an honest ranking."
+      },
+      {
+        "id": "the-ledger",
+        "label": "Why the decision stays open",
+        "focus": [
+          "apply",
+          "decision",
+          "resolved"
+        ],
+        "note": "Applying a winner claims nothing yet; later bars settle whether it held."
+      }
+    ],
+    "output": "docs/flows/optimize-flow.html"
+  },
+  "lanes": [
+    {
+      "id": "you",
+      "label": "You · viewer Optimize tab"
+    },
+    {
+      "id": "job",
+      "label": "Bridge sweep job"
+    },
+    {
+      "id": "chart",
+      "label": "TradingView Desktop"
+    },
+    {
+      "id": "store",
+      "label": "Journal + reports"
+    }
+  ],
+  "phases": [
+    {
+      "id": "plan",
+      "label": "Compose",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "sweep",
+      "label": "Sweep",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "judge",
+      "label": "Judge + decide",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "compose",
+    "start",
+    "baseline",
+    "points",
+    "restore",
+    "select",
+    "apply"
+  ],
+  "nodes": [
+    {
+      "id": "compose",
+      "lane": "you",
+      "col": 0,
+      "type": "frontend",
+      "label": "1 · Compose space",
+      "sublabel": "axes, value lists, objective",
+      "width": 150
+    },
+    {
+      "id": "start",
+      "lane": "you",
+      "col": 1,
+      "type": "frontend",
+      "label": "2 · Run sweep",
+      "sublabel": "POST /sweep · grid capped at 64",
+      "width": 150
+    },
+    {
+      "id": "baseline",
+      "lane": "job",
+      "col": 2,
+      "type": "backend",
+      "label": "Baseline first",
+      "sublabel": "your chart as it stands",
+      "width": 150
+    },
+    {
+      "id": "points",
+      "lane": "chart",
+      "col": 3,
+      "type": "cloud",
+      "label": "One backtest per point",
+      "sublabel": "settle, read, next",
+      "tag": "one job owns the chart",
+      "width": 150
+    },
+    {
+      "id": "journal",
+      "lane": "store",
+      "col": 3,
+      "type": "database",
+      "label": "Journal every run",
+      "sublabel": "reports/sweeps/<id>.jsonl",
+      "tag": "survives a crash",
+      "width": 150
+    },
+    {
+      "id": "restore",
+      "lane": "job",
+      "col": 3,
+      "type": "security",
+      "label": "Put inputs back",
+      "sublabel": "read back to verify",
+      "width": 150
+    },
+    {
+      "id": "select",
+      "lane": "job",
+      "col": 4,
+      "type": "backend",
+      "label": "Rank + verdict",
+      "sublabel": "plateau beats a lone peak",
+      "width": 150
+    },
+    {
+      "id": "apply",
+      "lane": "you",
+      "col": 5,
+      "type": "frontend",
+      "label": "3 · Apply winner",
+      "sublabel": "POST /sweep/apply",
+      "width": 150
+    },
+    {
+      "id": "decision",
+      "lane": "job",
+      "col": 5,
+      "type": "database",
+      "label": "Decision · pending",
+      "sublabel": "claims nothing yet",
+      "width": 150
+    },
+    {
+      "id": "resolved",
+      "lane": "store",
+      "col": 5,
+      "type": "database",
+      "label": "Held, or did not",
+      "sublabel": "realised out-of-sample P&L",
+      "width": 150
+    }
+  ],
+  "edges": [
+    {
+      "id": "compose-start",
+      "from": "compose",
+      "to": "start",
+      "variant": "default"
+    },
+    {
+      "id": "start-job",
+      "from": "start",
+      "to": "baseline",
+      "label": "starts a job",
+      "variant": "emphasis"
+    },
+    {
+      "id": "baseline-points",
+      "from": "baseline",
+      "to": "points",
+      "variant": "emphasis"
+    },
+    {
+      "id": "points-journal",
+      "from": "points",
+      "to": "journal",
+      "label": "append each run",
+      "variant": "dashed",
+      "role": "async"
+    },
+    {
+      "id": "points-restore",
+      "from": "points",
+      "to": "restore",
+      "label": "when the last point is done",
+      "variant": "security"
+    },
+    {
+      "id": "restore-select",
+      "from": "restore",
+      "to": "select",
+      "variant": "emphasis"
+    },
+    {
+      "id": "select-apply",
+      "from": "select",
+      "to": "apply",
+      "label": "sweep report",
+      "variant": "emphasis"
+    },
+    {
+      "id": "apply-decision",
+      "from": "apply",
+      "to": "decision",
+      "label": "logged",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "decision-resolved",
+      "from": "decision",
+      "to": "resolved",
+      "label": "a later backtest of the same configHash",
+      "variant": "dashed",
+      "role": "return"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "The sweep owns your chart",
+      "items": [
+        "Each point writes real inputs to your live chart",
+        "POST /sweep/resume finishes from the journal"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Undersell the winner",
+      "items": [
+        "A good neighbourhood beats a lone spike",
+        "Under eight settled runs reads as insufficient"
+      ]
+    }
+  ]
+}

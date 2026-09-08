@@ -5,6 +5,11 @@
 export * as chart from './chart.js';
 export * as data from './data.js';
 export * as gateAudit from './gateAudit.js';
+export * as backtest from './backtest.js';
+export * as validate from './validate.js';
+export * as paramspace from './paramspace.js';
+export * as objectives from './objectives.js';
+export * as sweep from './sweep.js';
 export * as pine from './pine.js';
 export * as health from './health.js';
 export * as capture from './capture.js';

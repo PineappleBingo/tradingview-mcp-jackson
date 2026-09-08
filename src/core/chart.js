@@ -12,9 +12,13 @@ export async function getState() {
       var chart = ${CHART_API};
       var studies = [];
       try {
+        var stratIds = {};
+        try { chart._chartWidget.model().model().dataSources().forEach(function(s) { try { var mi = s.metaInfo(); if (mi && mi.isTVScriptStrategy && typeof s.id === 'function') stratIds[s.id()] = true; } catch(e) {} }); } catch(e) {}
         var allStudies = chart.getAllStudies();
         studies = allStudies.map(function(s) {
-          return { id: s.id, name: s.name || s.title || 'unknown' };
+          var o = { id: s.id, name: s.name || s.title || 'unknown' };
+          if (stratIds[s.id]) o.is_strategy = true; // only strategy() scripts feed the Strategy Tester
+          return o;
         });
       } catch(e) {}
       return {

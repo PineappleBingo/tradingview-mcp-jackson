@@ -5,6 +5,7 @@ import { registerChartTools } from "./tools/chart.js";
 import { registerPineTools } from "./tools/pine.js";
 import { registerDataTools } from "./tools/data.js";
 import { registerGateAuditTools } from "./tools/gateAudit.js";
+import { registerBacktestTools } from "./tools/backtest.js";
 import { registerCaptureTools } from "./tools/capture.js";
 import { registerDrawingTools } from "./tools/drawing.js";
 import { registerAlertTools } from "./tools/alerts.js";
@@ -25,7 +26,7 @@ const server = new McpServer(
       "AI-assisted TradingView chart analysis and Pine Script development via Chrome DevTools Protocol",
   },
   {
-    instructions: `TradingView MCP — 78 tools for reading and controlling a live TradingView Desktop chart.
+    instructions: `TradingView MCP — 86 tools for reading and controlling a live TradingView Desktop chart.
 
 TOOL SELECTION GUIDE — use this to pick the right tool:
 
@@ -68,7 +69,8 @@ CONTEXT MANAGEMENT:
 - ALWAYS use study_filter on pine tools when you know which indicator you want
 - NEVER use verbose=true unless user specifically asks for raw data
 - Prefer capture_screenshot for visual context over pulling large datasets
-- Call chart_get_state ONCE at start, reuse entity IDs`,
+- Call chart_get_state ONCE at start, reuse entity IDs
+- strategy_run_backtest for trustworthy backtest numbers (settled, normalized, validated RunCard); strategy_sweep_plan to size a parameter sweep before the bridge runs it (POST /sweep)`,
   },
 );
 
@@ -78,6 +80,7 @@ registerChartTools(server);
 registerPineTools(server);
 registerDataTools(server);
 registerGateAuditTools(server);
+registerBacktestTools(server);
 registerCaptureTools(server);
 registerDrawingTools(server);
 registerAlertTools(server);

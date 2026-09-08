@@ -1,7 +1,13 @@
 # Phase 3 — Backtest tab: reproducible runs + a trust layer around the live Strategy Tester
 
-**Status: 📋 planned · redesigned 2026-09-03** (supersedes the 2026-08-31 flow-only plan; not yet started)
+**Status: ✅ implemented and verified on a live chart 2026-09-04** (commits `c64f82f` core · `086f606` bridge · `692b723` viewer, then the live-fix commit; see [implementation notes](./phase-3-4-implementation-notes.ko.md) for what differs from this spec)
+
+> The first live run found that **none of it worked against a real Strategy Tester**: the strategy
+> locate idiom matched the wrong study on every chart, and the payload shapes the code expected
+> are not the shapes TradingView Desktop 3.4 returns. Both are fixed and re-verified end to end;
+> the answers are in [Open questions — answered live](#open-questions--answered-live-2026-09-04).
 Korean companions: [what changed and why](./phase-3-4-redesign-notes.ko.md) · [where each pattern comes from](./functional-spec-sources.ko.md)
+User flow as an interactive diagram: [run one backtest](../flows/backtest-flow.html) · how-to: [`../BACKTEST_OPTIMIZE_GUIDE.md`](../BACKTEST_OPTIMIZE_GUIDE.md)
 
 ## Principle (unchanged)
 
@@ -250,20 +256,49 @@ Layout follows the artboard: **1 · configure → 2 · run → 3 · results → 
 - `http_bridge.test.js`: `POST /reports` → `GET /reports` lists `type:'backtest'` → `GET /reports/:id`
   returns `data`; bad type → 400; 6 MB body → 413; `timeoutMs: 999999` clamps to 120 000.
 
-## Open questions to verify at phase start (need the live chart)
+## Open questions — answered live (2026-09-04)
 
-1. Exact `reportData()` key names on TradingView Desktop 3.4 → fill the key map.
-2. `ordersData()` field names and the timestamp unit (seconds vs milliseconds) → `Trade` mapping.
-3. Does `metaInfo().inputs[]` expose `min`, `max`, `step`, `options`? (Pine declares them
-   positionally for 86 numeric inputs of PF 3G VP; TradingView normally surfaces them.)
-   Needed by Phase 4 seeding, checked here because `META_JS` is extended here.
-4. Does `setInputValues()` recompute while the Strategy Tester panel is closed, or must
-   `ui_open_panel strategy-tester` run first?
-5. Shape of `equityData()` (array of `{time, value}`? bars-like tuples?).
-6. Can commission / initial capital be read from the study (`strat.properties()` or
-   `metaInfo`), or must `costs` be copied from the Pine header (`strategy(... commission_value = 0.65, initial_capital = 10000)`)?
-7. Real trade count over the loaded 5-minute history — is the 5000 cap ever hit?
-8. Typical settle time — is 15 s enough, or should the viewer default to 30 s?
+Measured on TradingView Desktop 3.4.0 (Chromium 146) against COINBASE:SOLUSD · 15 with the
+built-in **Supertrend Strategy** loaded. The user's own PF 3G VP script is an `indicator()`,
+so it has **no Strategy Tester at all** — see "What blocked everything" below.
+
+| # | Question | Answer |
+|---|---|---|
+| 1 | `reportData()` key names | Not flat. Metrics nest under `performance.{all,long,short}` (`netProfit`, `netProfitPercent`, `totalTrades`, `percentProfitable`, `profitFactor`, `grossProfit/Loss`, `avgTrade`, `avgWinTrade`, `avgLosTrade`, `numberOfWiningTrades` …) plus top-level ratios `maxStrategyDrawDown(Percent)`, `sharpeRatio`, `sortinoRatio`, `openPL`, `buyHoldReturn(Percent)`, `maxStrategyRunUp(Percent)`, `maxMarginUsed`. **Every percentage is a fraction**: `netProfitPercent: -0.0379` means −3.79 %. |
+| 2 | `ordersData()` fields and time unit | `ordersData()` is the raw **fill** list (`{b,c,e,id,p,q,tm,tp}`, `tm` = bar index), not trades. The closed-trade list is **`reportData().trades`**: `{e:{c,p,tm,b,tp}, x:{…}, q, tp:{v,p}, cp:{v,p}, rn:{v,p}, dd:{v,p}, cm}`, times in **milliseconds**, side in `e.tp` (`le`/`lx`/`se`/`sx`). The **last row is the still-open trade**, which TradingView lists but excludes from `netProfit` — so we exclude it from metrics, validation and the window too. |
+| 3 | Does `metaInfo().inputs[]` expose `min`/`max`/`step`/`options`? | Yes, all four. But an unbounded numeric input carries **±1e12 sentinels**, and a nominal bound (`pyramiding 0..1e6`) is useless as a sweep axis, so anything that would not enumerate to ≤ 100 values is seeded as five points around its current value instead. |
+| 4 | Does `setInputValues()` recompute with the tester panel closed? | **Yes.** Verified with the bottom bar minimised (height 38 px) and with the Pine editor as the active tab: runs settled in 1.8–2.5 s with correct numbers. No `ui_open_panel` call is needed before a backtest. |
+| 5 | Shape of `equityData()` | **It does not exist.** The strategy source has no `equityData`, `bars` or any bar-by-bar curve. The equity curve is therefore the **closed-trade** one — `initialCapital + trade.cp.v` at each exit — which is what the tester's Overview plots anyway. `buyHold` and `marginUsage` arrays exist but are per-trade. |
+| 6 | Can costs be read from the study? | Yes — `reportData().buyHold[0]` is the initial capital (also input `in_8`), `currency` is on `reportData()`, commission on `in_9`/`in_11`. `runBacktest` now falls back to the report's capital when the caller passes none, so percent metrics are never blank. |
+| 7 | Is the 5000-order cap ever hit? | Not remotely: 300 trades (299 closed + 1 open) over ~12 000 bars of 15-minute history. |
+| 8 | Typical settle time — is 15 s enough? | Yes. Observed 1.5–8.0 s across ~20 runs (median ≈ 2 s; the 8 s outlier was the first run after a chart reload). The 15 s default stands. |
+
+### What blocked everything (found only by running it)
+
+1. **The strategy locate idiom matched any study.** Every source on the chart carries a
+   `performance` watched value, so `s.metaInfo && (s.ordersData || s.reportData || s.performance)`
+   returned the **Volume indicator** — first in `dataSources()`. Every strategy reader
+   (`data_get_strategy_results`, `data_get_trades`, `data_get_equity`) and the whole Phase 3
+   snapshot silently read an empty report and zero trades. Now: `model.activeStrategySource()`
+   first, then `metaInfo().isTVScriptStrategy`, in one shared `strategySourceJS()` in
+   `src/core/data.js` that all readers and the settle signature use.
+2. **An `indicator()` script has no Strategy Tester.** PF 3G VP is an indicator, so the tester
+   shows "Add strategy to this chart" and nothing in Phase 3/4 can run against it. `chart_get_state`
+   now returns `is_strategy: true` on the studies that actually are strategies, and the run,
+   the sweep job and the viewer all prefer a flagged strategy over a name match — otherwise the
+   default `/PineForge|PF 3G/i` filter would keep selecting the indicator.
+3. **One bad input value kills the strategy for good.** Writing an option *index* where a
+   categorical input wants its *label* (`in_2: 1` instead of `"percent_of_equity"`) is accepted
+   by `setInputValues()` and reads back as written — and from that moment `reportData()` is
+   `null` and never recovers, through any number of recomputes; only removing and re-adding the
+   study brings it back. Sweeps always enumerate option labels, so they were safe by
+   construction, but nothing enforced it for a hand-written override. `setInputs()` — the one
+   call every writer goes through — now validates against `metaInfo` and refuses the whole batch
+   before writing, and refuses to write at all if it cannot read the metadata.
+4. **Percentages were double-counted as percent.** Only `winRate` was scaled; `netProfitPct`,
+   `maxDrawdownPct` and `avgTradePct` were passed through as fractions, so a −3.79 % run
+   reported −0.0379 %. All four are scaled now, and TV-vs-computed agreement confirms it
+   (13 of 18 metric keys come back `both`).
 
 ## Risks
 

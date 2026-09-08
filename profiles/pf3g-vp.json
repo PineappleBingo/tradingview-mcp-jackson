@@ -19,26 +19,133 @@
     "dshapeRotation": "Audit D-Shape Rotation Gate Mask",
     "supertrend": "Integrated Supertrend"
   },
-  "required": ["mask"],
-  "gates": [
-    { "bit": 0,  "side": "L", "code": "Allow", "name": "allowLong",      "blocker": null },
-    { "bit": 1,  "side": "L", "code": "Room",  "name": "Room",           "blocker": "ROOM" },
-    { "bit": 2,  "side": "L", "code": "Prx",   "name": "Proximity",      "blocker": "PRX" },
-    { "bit": 3,  "side": "L", "code": "Trd",   "name": "Trend",          "blocker": "TRD" },
-    { "bit": 4,  "side": "L", "code": "Dshp",  "name": "D-Shape",        "blocker": "DSHP" },
-    { "bit": 5,  "side": "L", "code": "Conf",  "name": "confirmed",      "blocker": null },
-    { "bit": 6,  "side": "S", "code": "Allow", "name": "allowShort",     "blocker": null },
-    { "bit": 7,  "side": "S", "code": "Room",  "name": "Room",           "blocker": "ROOM" },
-    { "bit": 8,  "side": "S", "code": "Prx",   "name": "Proximity",      "blocker": "PRX" },
-    { "bit": 9,  "side": "S", "code": "Trd",   "name": "Trend",          "blocker": "TRD" },
-    { "bit": 10, "side": "S", "code": "Dshp",  "name": "D-Shape",        "blocker": "DSHP" },
-    { "bit": 11, "side": "S", "code": "Conf",  "name": "confirmed",      "blocker": null },
-    { "bit": 12, "side": "L", "code": "Mac",   "name": "Macro (long)",   "blocker": "MAC" },
-    { "bit": 13, "side": "S", "code": "Mac",   "name": "Macro (short)",  "blocker": "MAC" },
-    { "bit": 14, "side": "L", "code": "Rgm",   "name": "Regime (long)",  "blocker": "RGM" },
-    { "bit": 15, "side": "S", "code": "Rgm",   "name": "Regime (short)", "blocker": "RGM" }
+  "required": [
+    "mask"
   ],
-  "blockerPriority": ["Rgm", "Mac", "Trd", "Prx", "Room", "Dshp", "Allow", "Conf"],
+  "gates": [
+    {
+      "bit": 0,
+      "side": "L",
+      "code": "Allow",
+      "name": "allowLong",
+      "blocker": null
+    },
+    {
+      "bit": 1,
+      "side": "L",
+      "code": "Room",
+      "name": "Room",
+      "blocker": "ROOM"
+    },
+    {
+      "bit": 2,
+      "side": "L",
+      "code": "Prx",
+      "name": "Proximity",
+      "blocker": "PRX"
+    },
+    {
+      "bit": 3,
+      "side": "L",
+      "code": "Trd",
+      "name": "Trend",
+      "blocker": "TRD"
+    },
+    {
+      "bit": 4,
+      "side": "L",
+      "code": "Dshp",
+      "name": "D-Shape",
+      "blocker": "DSHP"
+    },
+    {
+      "bit": 5,
+      "side": "L",
+      "code": "Conf",
+      "name": "confirmed",
+      "blocker": null
+    },
+    {
+      "bit": 6,
+      "side": "S",
+      "code": "Allow",
+      "name": "allowShort",
+      "blocker": null
+    },
+    {
+      "bit": 7,
+      "side": "S",
+      "code": "Room",
+      "name": "Room",
+      "blocker": "ROOM"
+    },
+    {
+      "bit": 8,
+      "side": "S",
+      "code": "Prx",
+      "name": "Proximity",
+      "blocker": "PRX"
+    },
+    {
+      "bit": 9,
+      "side": "S",
+      "code": "Trd",
+      "name": "Trend",
+      "blocker": "TRD"
+    },
+    {
+      "bit": 10,
+      "side": "S",
+      "code": "Dshp",
+      "name": "D-Shape",
+      "blocker": "DSHP"
+    },
+    {
+      "bit": 11,
+      "side": "S",
+      "code": "Conf",
+      "name": "confirmed",
+      "blocker": null
+    },
+    {
+      "bit": 12,
+      "side": "L",
+      "code": "Mac",
+      "name": "Macro (long)",
+      "blocker": "MAC"
+    },
+    {
+      "bit": 13,
+      "side": "S",
+      "code": "Mac",
+      "name": "Macro (short)",
+      "blocker": "MAC"
+    },
+    {
+      "bit": 14,
+      "side": "L",
+      "code": "Rgm",
+      "name": "Regime (long)",
+      "blocker": "RGM"
+    },
+    {
+      "bit": 15,
+      "side": "S",
+      "code": "Rgm",
+      "name": "Regime (short)",
+      "blocker": "RGM"
+    }
+  ],
+  "blockerPriority": [
+    "Rgm",
+    "Mac",
+    "Trd",
+    "Prx",
+    "Room",
+    "Dshp",
+    "Allow",
+    "Conf"
+  ],
   "reasons": {
     "1": "Absorption",
     "2": "Pin/POC Rebound",
@@ -50,11 +157,163 @@
     "8": "Healthy Breakout + FVG"
   },
   "governingInputs": {
-    "RGM":  ["group \"2F Range Regime Gate\" (ER thresholds, scope, confirmation bars)"],
-    "MAC":  ["Confirmed Profile Macro Bias", "Macro Bias Recovery Closes"],
-    "TRD":  ["Trend Gate Engine", "Trend Gate Mode"],
-    "PRX":  ["Structural POC Proximity Guard", "Minimum Structural Room (ATR)"],
-    "ROOM": ["Require cost-adjusted next POC room", "Projected Target Policy", "Required Move Percent"],
-    "DSHP": ["D-Shape Filter Mode", "Boundary Settlement Bars"]
+    "RGM": [
+      "group \"2F Range Regime Gate\" (ER thresholds, scope, confirmation bars)"
+    ],
+    "MAC": [
+      "Confirmed Profile Macro Bias",
+      "Macro Bias Recovery Closes"
+    ],
+    "TRD": [
+      "Trend Gate Engine",
+      "Trend Gate Mode"
+    ],
+    "PRX": [
+      "Structural POC Proximity Guard",
+      "Minimum Structural Room (ATR)"
+    ],
+    "ROOM": [
+      "Require cost-adjusted next POC room",
+      "Projected Target Policy",
+      "Required Move Percent"
+    ],
+    "DSHP": [
+      "D-Shape Filter Mode",
+      "Boundary Settlement Bars"
+    ]
+  },
+  "optimize": {
+    "description": "Sweep windows (narrower than the declared Pine ranges) for the inputs the gate audit names as governing, plus the two exit inputs. Labels resolve to in_N ids at runtime through metaInfo().inputs[].name.",
+    "shortlist": [
+      {
+        "label": "Trend Gate Mode",
+        "values": [
+          "Soft Filter",
+          "Hard Filter"
+        ],
+        "group": "TRD"
+      },
+      {
+        "label": "Trend Gate Engine",
+        "values": [
+          "Radius Trend",
+          "Supertrend"
+        ],
+        "group": "TRD"
+      },
+      {
+        "label": "ER Range Threshold",
+        "type": "decimal",
+        "min": 0.15,
+        "max": 0.4,
+        "step": 0.05,
+        "group": "RGM"
+      },
+      {
+        "label": "ER Release",
+        "type": "decimal",
+        "min": 0.3,
+        "max": 0.6,
+        "step": 0.05,
+        "group": "RGM"
+      },
+      {
+        "label": "Efficiency Ratio Length",
+        "type": "int",
+        "min": 10,
+        "max": 20,
+        "step": 2,
+        "group": "RGM"
+      },
+      {
+        "label": "Regime Confirmation Bars",
+        "type": "int",
+        "min": 2,
+        "max": 5,
+        "step": 1,
+        "group": "RGM"
+      },
+      {
+        "label": "Range Regime Gate",
+        "values": [
+          "Warning Only",
+          "Hard Filter"
+        ],
+        "group": "RGM"
+      },
+      {
+        "label": "Confirmed Profile Macro Bias",
+        "values": [
+          "Soft Filter",
+          "Warning Only",
+          "Off"
+        ],
+        "group": "MAC"
+      },
+      {
+        "label": "Macro Bias Recovery Closes",
+        "type": "int",
+        "min": 1,
+        "max": 4,
+        "step": 1,
+        "group": "MAC"
+      },
+      {
+        "label": "Structural POC Proximity Guard",
+        "values": [
+          "Warning Only",
+          "Hard Filter"
+        ],
+        "group": "PRX"
+      },
+      {
+        "label": "Minimum Structural Room (ATR)",
+        "type": "decimal",
+        "min": 0.5,
+        "max": 1.25,
+        "step": 0.25,
+        "group": "PRX"
+      },
+      {
+        "label": "Projected Target Policy",
+        "values": [
+          "Hard Filter",
+          "Warning Only"
+        ],
+        "group": "ROOM"
+      },
+      {
+        "label": "D-Shape Filter Mode",
+        "values": [
+          "Hard Filter",
+          "Warning Only"
+        ],
+        "group": "DSHP"
+      },
+      {
+        "label": "D-Shape Boundary Settlement Bars",
+        "type": "int",
+        "min": 1,
+        "max": 3,
+        "step": 1,
+        "group": "DSHP"
+      },
+      {
+        "label": "Strategy Stop ATR",
+        "type": "decimal",
+        "min": 0.75,
+        "max": 1.5,
+        "step": 0.25,
+        "group": "EXIT"
+      },
+      {
+        "label": "Strategy Take Profit ATR",
+        "type": "decimal",
+        "min": 1.5,
+        "max": 3.0,
+        "step": 0.5,
+        "group": "EXIT"
+      }
+    ]
   }
 }

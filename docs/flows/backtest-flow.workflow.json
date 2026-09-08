@@ -1,0 +1,231 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Run one backtest",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "user-steps",
+        "label": "What you actually click",
+        "focus": [
+          "configure",
+          "run",
+          "results",
+          "report"
+        ],
+        "note": "The four steps the Backtest tab asks of you, in order."
+      },
+      {
+        "id": "machine-steps",
+        "label": "What happens after Run",
+        "focus": [
+          "tool",
+          "chartwork",
+          "card"
+        ],
+        "note": "One server-side call owns apply, settle and read so all three views come from the same instant."
+      },
+      {
+        "id": "precondition",
+        "label": "Why it may refuse",
+        "focus": [
+          "strategy",
+          "configure"
+        ],
+        "note": "Only a strategy() script has a Strategy Tester; an indicator() has nothing to read."
+      }
+    ],
+    "output": "docs/flows/backtest-flow.html"
+  },
+  "lanes": [
+    {
+      "id": "you",
+      "label": "You · viewer Backtest tab"
+    },
+    {
+      "id": "bridge",
+      "label": "Bridge + MCP server"
+    },
+    {
+      "id": "chart",
+      "label": "TradingView Desktop"
+    }
+  ],
+  "phases": [
+    {
+      "id": "setup",
+      "label": "Configure",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "execute",
+      "label": "Run",
+      "fromCol": 2,
+      "toCol": 4,
+      "variant": "emphasis"
+    },
+    {
+      "id": "keep",
+      "label": "Read + keep",
+      "fromCol": 5,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "mainPath": [
+    "configure",
+    "run",
+    "tool",
+    "chartwork",
+    "card",
+    "results"
+  ],
+  "nodes": [
+    {
+      "id": "strategy",
+      "lane": "chart",
+      "col": 0,
+      "type": "security",
+      "label": "strategy() script",
+      "sublabel": "an indicator() has no tester",
+      "tag": "precondition",
+      "width": 150
+    },
+    {
+      "id": "configure",
+      "lane": "you",
+      "col": 0,
+      "type": "frontend",
+      "label": "1 · Configure",
+      "sublabel": "overrides, split date, capital",
+      "width": 150
+    },
+    {
+      "id": "run",
+      "lane": "you",
+      "col": 1,
+      "type": "frontend",
+      "label": "2 · Run backtest",
+      "sublabel": "restore inputs after? your choice",
+      "width": 150
+    },
+    {
+      "id": "tool",
+      "lane": "bridge",
+      "col": 2,
+      "type": "backend",
+      "label": "strategy_run_backtest",
+      "sublabel": "POST /call · 60 s budget",
+      "width": 150
+    },
+    {
+      "id": "chartwork",
+      "lane": "chart",
+      "col": 3,
+      "type": "cloud",
+      "label": "Apply, settle, read",
+      "sublabel": "one consistent snapshot",
+      "tag": "settles in 2–8 s",
+      "width": 150
+    },
+    {
+      "id": "card",
+      "lane": "bridge",
+      "col": 4,
+      "type": "backend",
+      "label": "RunCard",
+      "sublabel": "metrics, provenance, verdict",
+      "width": 150
+    },
+    {
+      "id": "results",
+      "lane": "you",
+      "col": 5,
+      "type": "frontend",
+      "label": "3 · Read results",
+      "sublabel": "verdict, IS/OOS, trades, equity",
+      "width": 150
+    },
+    {
+      "id": "report",
+      "lane": "bridge",
+      "col": 5,
+      "type": "database",
+      "label": "4 · Save as report",
+      "sublabel": "POST /reports",
+      "width": 150
+    }
+  ],
+  "edges": [
+    {
+      "id": "detect-strategy",
+      "from": "strategy",
+      "to": "configure",
+      "label": "detected via is_strategy",
+      "variant": "security"
+    },
+    {
+      "id": "configure-run",
+      "from": "configure",
+      "to": "run",
+      "variant": "default"
+    },
+    {
+      "id": "run-tool",
+      "from": "run",
+      "to": "tool",
+      "label": "one call",
+      "variant": "emphasis"
+    },
+    {
+      "id": "tool-chart",
+      "from": "tool",
+      "to": "chartwork",
+      "label": "set inputs",
+      "variant": "emphasis"
+    },
+    {
+      "id": "chart-card",
+      "from": "chartwork",
+      "to": "card",
+      "label": "report + trades + equity",
+      "variant": "emphasis"
+    },
+    {
+      "id": "card-results",
+      "from": "card",
+      "to": "results",
+      "variant": "emphasis"
+    },
+    {
+      "id": "results-report",
+      "from": "results",
+      "to": "report",
+      "label": "keep it",
+      "variant": "dashed",
+      "role": "branch"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "Before you start",
+      "items": [
+        "The chart needs a strategy() script; chart_get_state marks it is_strategy",
+        "PF 3G VP is an indicator() — use strategy_gate_audit for that one instead",
+        "Leave restore off to keep the run visible on the chart, on to put your settings back"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Reading the RunCard",
+      "items": [
+        "Source both means TradingView and our recomputation agree on that metric",
+        "Verdict edge needs p < 0.05, a positive out-of-sample profit factor and 30+ trades",
+        "insufficient is an honest hold, not a failure: too few trades or an unsettled read"
+      ]
+    }
+  ]
+}

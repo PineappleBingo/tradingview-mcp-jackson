@@ -233,6 +233,26 @@ MCP_BRIDGE_TOKEN=mysecret node scripts/http-bridge.js
 
 Layout: verdict bar strip (upper half = long, lower half = short; green fired / red blocked / amber live) → 16-row gate heatmap (filled cell = gate failed, bright = primary blocker) → blocker histogram (click to filter) → sortable pattern-bar table → click any bar for the full verdict (mask, failed gates, metrics, governing inputs). The page asks for the bridge token once (kept in `localStorage`), polls `POST /call {tool:"strategy_gate_audit"}`, pauses while the tab is hidden, and shows a banner when TradingView is unreachable (bridge answers 503). `GET /viewer` itself is unauthenticated static HTML; every data call still needs the token. The bridge's MCP server and a Claude Code session's MCP server can attach to the same chart at once (CDP allows multiple clients). If you expose the bridge through ngrok's free tier, the first browser visit shows ngrok's interstitial page — click through once.
 
+### Backtest and Optimize (new)
+
+Read the live **Strategy Tester** — no simulator is written. `strategy_run_backtest` returns one
+settled, normalized, validated RunCard; `POST /sweep` runs a resumable parameter sweep as a bridge
+job and ends in a decision that later bars confirm or refute.
+
+**Both flows as interactive diagrams** (pan, zoom, search, trace, guided views; single self-contained
+HTML, no server needed):
+
+| Flow | Open | Steps |
+|---|---|---|
+| Run one backtest | [docs/flows/backtest-flow.html](docs/flows/backtest-flow.html) | configure → run → read results → save report |
+| Sweep and decide | [docs/flows/optimize-flow.html](docs/flows/optimize-flow.html) | compose space → run job → rank → apply → decision resolves |
+
+Full walkthrough, payload shapes and failure modes: **[docs/BACKTEST_OPTIMIZE_GUIDE.md](docs/BACKTEST_OPTIMIZE_GUIDE.md)**.
+
+> Requires a `strategy()` script on the chart. An `indicator()` has no Strategy Tester, so these
+> tools have nothing to read — `chart_get_state` marks the real ones with `is_strategy: true`.
+> PF 3G VP is an indicator; use the gate-audit tools above for it.
+
 ### Chart Control
 
 | Tool | What it does |
@@ -295,6 +315,7 @@ tv symbol BTCUSD                   # change symbol
 tv ohlcv --summary                 # price summary
 tv screenshot -r chart             # capture chart
 tv pine compile                    # compile Pine Script
+tv backtest run -i '{"in_1": 4}' -s 2026-08-01 -r --md   # one validated backtest
 tv pane layout 2x2                 # 4-chart grid
 tv stream quote | jq '.close'      # monitor price ticks
 ```

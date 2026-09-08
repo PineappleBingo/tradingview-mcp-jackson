@@ -1,6 +1,6 @@
 # TradingView MCP — Claude Instructions
 
-83 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
+86 tools for reading and controlling a live TradingView Desktop chart via CDP (port 9222).
 
 ## Branch Rule — read first
 
@@ -13,7 +13,7 @@ confirm before doing it.)
 
 ## Environment note
 
-The MCP server connects to `localhost:9222`, so **all 83 tools require TradingView Desktop
+The MCP server connects to `localhost:9222`, so **all 86 tools require TradingView Desktop
 running on the same machine**. In a cloud session (`claude --cloud`) there is no chart and
 every tool fails. To use the web UI with a live chart, prefer `claude --remote-control` (runs
 locally, steered from the browser), or expose the HTTP bridge through a tunnel as described in
@@ -42,6 +42,17 @@ Use `study_filter` parameter to target a specific indicator by name substring (e
 2. `data_get_pine_tables` → the strategy's telemetry table (e.g., PF-TLM rows) verbatim
 3. `data_get_pine_labels` → blocked-entry labels (e.g., "X8·MAC" = pattern 8 blocked by the macro gate)
 4. Decode masks / short codes with the strategy repo's `docs/mcp-debug-workflow.md`, or invoke the `strategy-gate-debug` skill for the full loop
+
+### "Backtest or optimize my strategy" (Phase 3/4)
+
+**Requires a `strategy()` script on the chart.** An `indicator()` has no Strategy Tester, so
+these tools have nothing to read — `chart_get_state` marks the real ones with `is_strategy: true`.
+(PF 3G VP is an indicator; the gate-audit tools above are what apply to it.)
+
+How-to for humans, with interactive flow diagrams: `docs/BACKTEST_OPTIMIZE_GUIDE.md` (`docs/flows/*.html`).
+
+1. `strategy_run_backtest` (`inputs` as `{in_N: value}`, `split_date`, `restore`) → ONE settled, normalized, validated RunCard: metrics with per-key provenance (`tv`/`computed`/`both`), IS/OOS split, Monte-Carlo p-values, walk-forward, verdict `edge|noise|insufficient`. Prefer it over `data_get_strategy_results` + `data_get_trades` whenever the numbers have to be trusted.
+2. `strategy_sweep_plan` (`meta_inputs` from the viewer's META probe via `ui_evaluate`, or an explicit `space`) → evaluation count, time estimate and the points — without running anything. The sweep itself is a **bridge job**: `POST /sweep` → `GET /sweep/status` → a `sweep` report; `POST /sweep/apply` writes a pending `decision` that a later backtest of the same config resolves. Specs: `docs/phase-plan/phase-3-backtest.md`, `phase-4-optimize.md`; implementation notes: `docs/phase-plan/phase-3-4-implementation-notes.ko.md`.
 
 ### "Give me price data"
 - `data_get_ohlcv` with `summary: true` → compact stats (high, low, range, change%, avg volume, last 5 bars)
@@ -94,6 +105,7 @@ Use `study_filter` parameter to target a specific indicator by name substring (e
 
 ### "Manage alerts"
 - `alert_create` → set price alert (condition: "crossing", "greater_than", "less_than")
+- `alert_toggle` → turn an alert on or off; `alert_list` flags expired / stale-version / never-fired
 - `alert_list` → view active alerts
 - `alert_delete` → remove alerts
 
@@ -141,6 +153,7 @@ These tools can return large payloads. Follow these rules to avoid context bloat
 - Entity IDs (from `chart_get_state`) are session-specific — don't cache across sessions
 - Pine indicators must be **visible** on chart for pine graphics tools to read their data
 - `chart_manage_indicator` requires **full indicator names**: "Relative Strength Index" not "RSI", "Moving Average Exponential" not "EMA", "Bollinger Bands" not "BB"
+- `indicator_set_inputs` values must match the input's declared type, and a categorical input takes its **option label**, never the option's index — a value outside the allowed set is accepted by TradingView and then permanently stops the script from computing, so the tool validates and refuses instead of writing
 - Screenshots save to `screenshots/` directory with timestamps
 - OHLCV capped at 500 bars; trades default 20 per request (max 200); study series capped at 500 bars
 - Pine labels capped at 50 per study by default (pass `max_labels` to override)

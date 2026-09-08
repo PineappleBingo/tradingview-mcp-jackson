@@ -1,8 +1,9 @@
 # Phase 4 — Optimize tab: typed parameter space, objective registry, a resumable sweep job, and a verdict
 
-**Status: 📋 planned · redesigned 2026-09-03** (supersedes the 2026-08-31 plan; not yet started)
+**Status: 🛠 implemented 2026-09-03 · live verification pending** (commits `6fa737f` core · `777521a` sweep job · `389e4ae` viewer · `ff282e0` decision resolution; see [implementation notes](./phase-3-4-implementation-notes.ko.md) for what differs from this spec)
 Depends on Phase 3: `runBacktest()`, `RunCard`, `validate.js`, `POST /reports`, `timeoutMs` on `/call`.
 Korean companions: [what changed and why](./phase-3-4-redesign-notes.ko.md) · [where each pattern comes from](./functional-spec-sources.ko.md)
+User flow as an interactive diagram: [sweep and decide](../flows/optimize-flow.html) · how-to: [`../BACKTEST_OPTIMIZE_GUIDE.md`](../BACKTEST_OPTIMIZE_GUIDE.md)
 
 ## What changed against the first plan
 

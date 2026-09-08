@@ -39,6 +39,9 @@ const FIND_MONACO = `
  * Opens the Pine Editor panel and waits for Monaco to become available.
  * Returns true if editor is accessible, false on timeout.
  */
+// "Is the editor on screen?" — the one definition ui.js's openPanel shares.
+export const PINE_EDITOR_OPEN_JS = `(function() { var m = document.querySelector('.monaco-editor.pine-editor-monaco'); return !!(m && m.offsetParent); })()`;
+
 export async function ensurePineEditorOpen() {
   const already = await evaluate(`
     (function() {
@@ -296,7 +299,8 @@ export async function compile() {
           btns[i].click();
           return 'Save and add to chart';
         }
-        if (!fallback && /^(Add to chart|Update on chart)/i.test(text)) {
+        var label = btns[i].getAttribute('title') || btns[i].getAttribute('aria-label') || '';
+        if (!fallback && (/^(Add to chart|Update on chart)/i.test(text) || /^(Add to chart|Update on chart)$/i.test(label))) {
           fallback = btns[i];
         }
         if (!saveBtn && btns[i].className.indexOf('saveButton') !== -1 && btns[i].offsetParent !== null) {
@@ -452,8 +456,9 @@ export async function smartCompile() {
           btns[i].click();
           return 'Save and add to chart';
         }
-        if (!addBtn && /^add to chart$/i.test(text)) addBtn = btns[i];
-        if (!updateBtn && /^update on chart$/i.test(text)) updateBtn = btns[i];
+        var label = btns[i].getAttribute('title') || btns[i].getAttribute('aria-label') || '';
+        if (!addBtn && (/^add to chart$/i.test(text) || /^add to chart$/i.test(label))) addBtn = btns[i];
+        if (!updateBtn && (/^update on chart$/i.test(text) || /^update on chart$/i.test(label))) updateBtn = btns[i];
         if (!saveBtn && btns[i].className.indexOf('saveButton') !== -1 && btns[i].offsetParent !== null) saveBtn = btns[i];
       }
       if (addBtn) { addBtn.click(); return 'Add to chart'; }

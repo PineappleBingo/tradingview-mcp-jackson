@@ -64,8 +64,8 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 | **Audit** | ✅ 동작 | 봉별 판정 스트립 · 게이트 히트맵 · 차단자 히스토그램 · 패턴 봉 표 · 봉 상세 드로어 |
 | **Reports** | ✅ 동작 | 저장된 AI 분석 리포트 목록 / 상세 |
 | **Alerts** | ✅ 동작 | TradingView 알림 목록 · stale 판정 · 켜기/끄기 · 삭제(확인 게이트) |
-| **Backtest** | ⏳ 예정 (2026-09 재설계) | [Phase 3 계획](./phase-plan/phase-3-backtest.md) — 라이브 Strategy Tester 읽기 + 재현 가능한 RunCard + 검증(IS/OOS · walk-forward · Monte-Carlo) · [바이어스 점검](./phase-plan/phase-3.5-bias-checks.md)(선택) |
-| **Optimize** | ⏳ 예정 (2026-09 재설계) | [Phase 4 계획](./phase-plan/phase-4-optimize.md) — 파라미터 공간 · 목적함수 · 재개 가능한 스윕 잡 · 판정(edge/noise/insufficient) · 재설계 사유는 [변경 노트](./phase-plan/phase-3-4-redesign-notes.ko.md) |
+| **Backtest** | 🛠 구현됨 (라이브 검증 대기) | 오버라이드 선택 → Run → settle 상태 · verdict · 지표 표(출처 태그) · 검증 블록 · 트레이드 표 → Save as report. [Phase 3 스펙](./phase-plan/phase-3-backtest.md) · [구현 노트](./phase-plan/phase-3-4-implementation-notes.ko.md) · [바이어스 점검](./phase-plan/phase-3.5-bias-checks.md)(미구현, 선택) |
+| **Optimize** | 🛠 구현됨 (라이브 검증 대기) | 프로파일 shortlist에서 파라미터 추가 → 목적함수·샘플러·split date → Run sweep(브리지 잡, 새로고침 후 재접속) → verdict · 베이스라인 대비 equity 오버레이 · 순위 표 · 매트릭스 → Apply(결정 기록). [Phase 4 스펙](./phase-plan/phase-4-optimize.md) · [변경 노트](./phase-plan/phase-3-4-redesign-notes.ko.md) |
 
 주소창으로 바로 이동할 수 있습니다: `#audit` · `#reports` · `#reports/<리포트id>` · `#alerts` · `#backtest` · `#optimize`
 

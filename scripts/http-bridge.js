@@ -12,13 +12,24 @@
  *                   asks for the token itself and calls POST /call)
  *   GET  /health  → { ok, connected, server }        (503 when TV/CDP is down)
  *   GET  /tools   → { tools: [{ name, description }] }
- *   POST /call    → body { tool, params } → MCP tool result (JSON; 503 when the
- *                   tool failed because TradingView/CDP is unreachable)
+ *   POST /call    → body { tool, params, timeoutMs? } → MCP tool result (JSON; 503 when
+ *                   the tool failed because TradingView/CDP is unreachable). timeoutMs
+ *                   defaults to 30 s and is clamped to 1–120 s (a backtest run waits on
+ *                   the Strategy Tester, so the Backtest tab passes 60 s).
  *   POST /agent   → { prompt } → { id }; runs `claude -p` on this host (opt-in via
  *                   MCP_BRIDGE_ALLOW_AGENT=1 — NEVER behind a tunnel); one at a time
  *   GET  /agent/status → { busy, state, elapsedMs, reportId?, error? }
  *   POST /agent/cancel → SIGTERMs the running child; its state becomes 'cancelled'\n *   POST /agent/resume → continues a timed-out run in its own claude session
  *   GET  /reports[/:id], DELETE /reports/:id → saved analysis reports (reports/*.json)
+ *   POST /reports → { type: backtest|sweep|decision, title, summary?, body_md, data? } → { id }
+ *                   (Phase 3: the viewer saves RunCards into the SAME report store)
+ *   POST /sweep   → { space, objective?, splitDate?, title?, costs?, study? } → { id, total, expectedMs }
+ *                   (study = name substring; default PF 3G, else the first strategy() on the chart)
+ *                   runs strategy_run_backtest per parameter point IN-PROCESS, journals to
+ *                   reports/sweeps/<id>.jsonl, restores the inputs, writes a type:'sweep' report.
+ *                   One chart-mutating job at a time: 409 while an agent run OR a sweep is active.
+ *   GET  /sweep/status · POST /sweep/cancel · POST /sweep/resume {id} · POST /sweep/apply {id,index}
+ *   GET  /sweep/objectives → the objective registry (for the viewer's selector)
  *
  * Env:
  *   MCP_BRIDGE_PORT   default 3001
@@ -32,6 +43,8 @@
  *   MCP_BRIDGE_AGENT_TIMEOUT_MS  default 900000 (15 min). A two-timeframe opus audit
  *                     measured 257s, so 300s left almost no headroom. On timeout the run
  *                     is kept resumable rather than discarded.
+ *   MCP_BRIDGE_SWEEP_TIMEOUT_MS  default 3600000 (60 min) for a whole sweep; a timed-out
+ *                     sweep restores the inputs and stays resumable from its journal.
  */
 
 import http from 'node:http';
@@ -40,6 +53,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { createSweepRunner } from './sweep-job.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_PORT = parseInt(process.env.MCP_BRIDGE_PORT ?? '3001', 10);
@@ -51,6 +65,7 @@ const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH ?? path.join(__dirname, '..'
 const ALLOW_AGENT = process.env.MCP_BRIDGE_ALLOW_AGENT === '1';
 const AGENT_TIMEOUT_MS = parseInt(process.env.MCP_BRIDGE_AGENT_TIMEOUT_MS ?? '900000', 10);
 const REPORTS_DIR = process.env.MCP_BRIDGE_REPORTS_DIR ?? path.join(__dirname, '..', 'reports');
+const SWEEP_TIMEOUT_MS = parseInt(process.env.MCP_BRIDGE_SWEEP_TIMEOUT_MS ?? '3600000', 10);
 const CDP_PROBE_URL = 'http://localhost:9222/json/version';
 const VIEWER_PATH = path.join(__dirname, 'viewer', 'gate-audit.html');
 const CDP_DOWN_RE = /CDP connection failed|not running with CDP|ECONNREFUSED|No TradingView chart target|9222/i;
@@ -95,7 +110,12 @@ function startMCPProcess() {
   });
 }
 
-function send(method, params) {
+const DEFAULT_CALL_TIMEOUT_MS = 30_000;
+// Per-call ceiling: a plain read is sub-second, a backtest run waits on the tester, and the
+// sweep job (in-process) waits on 64 of them. Clamped so a client cannot pin a slot forever.
+const clampTimeout = (ms) => Math.max(1_000, Math.min(120_000, Number(ms) || DEFAULT_CALL_TIMEOUT_MS));
+
+function send(method, params, timeoutMs = DEFAULT_CALL_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     if (!mcpProcess) startMCPProcess();
     const id = nextId();
@@ -107,7 +127,7 @@ function send(method, params) {
         pendingRequests.delete(id);
         reject(new Error(`MCP call timed out: ${method}`));
       }
-    }, 30_000);
+    }, timeoutMs).unref();
   });
 }
 
@@ -124,9 +144,9 @@ async function ensureInitialized() {
   console.log('[bridge] MCP server initialized');
 }
 
-async function callTool(tool, params) {
+async function callTool(tool, params, timeoutMs) {
   await ensureInitialized();
-  const result = await send('tools/call', { name: tool, arguments: params });
+  const result = await send('tools/call', { name: tool, arguments: params }, clampTimeout(timeoutMs));
   // MCP returns { content: [{ type: 'text', text: '...' }] }
   if (result && result.content) {
     const textPart = result.content.find((c) => c.type === 'text');
@@ -153,6 +173,21 @@ let agentRun = null;
 const newId = () => Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
 const SAFE_ID = /^[a-z0-9-]+$/;
 const reportPath = (id) => path.join(REPORTS_DIR, id + '.json');
+// Report types the viewer may POST (agent runs write 'analysis' themselves). One store, one
+// envelope: {id, createdAt, type, title, summary, body_md, context[]} + an optional `data`
+// payload (a RunCard, a sweep result, a decision) that the list projection never exposes.
+const REPORT_TYPES = ['backtest', 'sweep', 'decision'];
+const REPORT_BODY_MAX = 5 * 1024 * 1024;
+function saveReport(report) {
+  mkdirSync(REPORTS_DIR, { recursive: true });
+  writeFileSync(reportPath(report.id), JSON.stringify(report, null, 2));
+  return report.id;
+}
+const readReport = (id) => { try { return JSON.parse(readFileSync(reportPath(id), 'utf8')); } catch { return null; } };
+// The sweep job calls tools in-process (callTool), so its per-run ceiling is its own.
+const sweeps = createSweepRunner({ callTool: (t, p, ms) => callTool(t, p, ms), reportsDir: REPORTS_DIR, saveReport, newId, timeoutMs: SWEEP_TIMEOUT_MS, runTimeoutMs: 120_000, log: (m) => console.log(m) });
+// Agent runs and sweeps both mutate the ONE live chart; never let them overlap.
+const chartBusy = () => ({ agent: !!(agentRun && agentRun.state === 'running'), sweep: sweeps.busy() });
 
 // endedAt freezes the clock. Computing this as `Date.now() - startedAt` unconditionally
 // made a finished run's elapsed keep climbing (a run killed at 300s reported 575s), which
@@ -382,12 +417,12 @@ const server = http.createServer(async (req, res) => {
         cdpOk = cdpRes.ok;
       } catch { cdpOk = false; }
       if (!cdpOk) {
-        writeJson(res, 503, { ok: false, connected: false, agent: ALLOW_AGENT, error: 'TradingView Desktop not running with --remote-debugging-port=9222' });
+        writeJson(res, 503, { ok: false, connected: false, agent: ALLOW_AGENT, postReports: true, sweep: true, error: 'TradingView Desktop not running with --remote-debugging-port=9222' });
         return;
       }
-      writeJson(res, 200, { ok: true, connected: true, agent: ALLOW_AGENT, defaultModel: DEFAULT_MODEL, models: MODELS, server: MCP_SERVER_PATH });
+      writeJson(res, 200, { ok: true, connected: true, agent: ALLOW_AGENT, defaultModel: DEFAULT_MODEL, models: MODELS, postReports: true, sweep: true, server: MCP_SERVER_PATH });
     } catch (err) {
-      writeJson(res, 503, { ok: false, connected: false, agent: ALLOW_AGENT, error: err.message });
+      writeJson(res, 503, { ok: false, connected: false, agent: ALLOW_AGENT, postReports: true, sweep: true, error: err.message });
     }
     return;
   }
@@ -427,8 +462,38 @@ const server = http.createServer(async (req, res) => {
         try { ({ prompt, title, context, model } = JSON.parse(body)); } catch { writeJson(res, 400, { error: 'Invalid JSON body — expected { "prompt": "..." }' }); return; }
         if (!prompt || typeof prompt !== 'string') { writeJson(res, 400, { error: 'Missing "prompt"' }); return; }
         if (agentRun && agentRun.state === 'running') { writeJson(res, 409, { error: 'a run is already in progress', id: agentRun.id }); return; }
+        if (sweeps.busy()) { writeJson(res, 409, { error: 'a parameter sweep is running — it owns the chart until it finishes', sweep: sweeps.status().id }); return; }
         const m = pickModel(model);
         writeJson(res, 200, { id: startAgent(prompt, title, context, m), model: m });
+      });
+      return;
+    }
+  }
+
+  if (pathname === '/sweep' || pathname.startsWith('/sweep/')) {
+    const readBody = (cb) => { let body = ''; req.on('data', (c) => { body += c; }); req.on('end', () => { let j; try { j = body ? JSON.parse(body) : {}; } catch { writeJson(res, 400, { error: 'Invalid JSON body' }); return; } cb(j); }); };
+    const fail = (e) => writeJson(res, e.code || 500, { error: e.message, ...(e.id ? { id: e.id } : {}), ...(e.state ? { state: e.state } : {}) });
+    if (req.method === 'GET' && pathname === '/sweep/status') { writeJson(res, 200, sweeps.status()); return; }
+    if (req.method === 'GET' && pathname === '/sweep/objectives') { writeJson(res, 200, { objectives: sweeps.objectives() }); return; }
+    if (req.method === 'POST' && pathname === '/sweep') {
+      readBody((j) => {
+        if (chartBusy().agent) { writeJson(res, 409, { error: 'an agent run is in progress — it owns the chart until it finishes', id: agentRun.id }); return; }
+        try { writeJson(res, 200, sweeps.start(j)); } catch (e) { fail(e); }
+      });
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/sweep/cancel') { try { writeJson(res, 200, sweeps.cancel()); } catch (e) { fail(e); } return; }
+    if (req.method === 'POST' && pathname === '/sweep/resume') {
+      readBody((j) => {
+        if (chartBusy().agent) { writeJson(res, 409, { error: 'an agent run is in progress', id: agentRun.id }); return; }
+        try { writeJson(res, 200, sweeps.resume(String(j.id || ''))); } catch (e) { fail(e); }
+      });
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/sweep/apply') {
+      readBody(async (j) => {
+        if (!SAFE_ID.test(String(j.id || ''))) { writeJson(res, 400, { error: 'bad sweep id' }); return; }
+        try { writeJson(res, 200, await sweeps.apply(String(j.id), Number(j.index), { readReport })); } catch (e) { fail(e); }
       });
       return;
     }
@@ -445,6 +510,29 @@ const server = http.createServer(async (req, res) => {
           catch { return null; }
         }).filter(Boolean).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
         writeJson(res, 200, { count: list.length, reports: list });
+        return;
+      }
+      if (req.method === 'POST' && pathname === '/reports') {
+        let body = '', over = false;
+        req.on('data', (c) => { body += c; if (body.length > REPORT_BODY_MAX && !over) { over = true; writeJson(res, 413, { error: 'report body exceeds 5 MB' }); req.destroy(); } });
+        req.on('end', () => {
+          if (over) return;
+          let r;
+          try { r = JSON.parse(body); } catch { writeJson(res, 400, { error: 'Invalid JSON body — expected { "type", "title", "body_md", "data"? }' }); return; }
+          if (!REPORT_TYPES.includes(r.type)) { writeJson(res, 400, { error: 'type must be one of ' + REPORT_TYPES.join('|') }); return; }
+          if (typeof r.title !== 'string' || !r.title.trim()) { writeJson(res, 400, { error: 'Missing "title"' }); return; }
+          if (typeof r.body_md !== 'string') { writeJson(res, 400, { error: 'Missing "body_md" (markdown string)' }); return; }
+          const rid = newId();
+          const report = {
+            id: rid, createdAt: new Date().toISOString(), type: r.type, title: r.title.trim().slice(0, 120),
+            summary: typeof r.summary === 'string' && r.summary ? r.summary.slice(0, 400) : extractSummary(r.body_md),
+            body_md: r.body_md, context: Array.isArray(r.context) ? r.context.map(String).slice(0, 20) : [],
+            ...(r.model ? { model: String(r.model).slice(0, 40) } : {}),
+            ...(r.data && typeof r.data === 'object' ? { data: r.data } : {}),
+          };
+          try { saveReport(report); writeJson(res, 200, { id: rid, type: report.type }); }
+          catch (e) { writeJson(res, 500, { error: 'report write failed: ' + e.message }); }
+        });
         return;
       }
       if (!SAFE_ID.test(id)) { writeJson(res, 400, { error: 'bad report id' }); return; }
@@ -472,11 +560,11 @@ const server = http.createServer(async (req, res) => {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
     req.on('end', async () => {
-      let tool, params;
+      let tool, params, timeoutMs;
       try {
-        ({ tool, params } = JSON.parse(body));
+        ({ tool, params, timeoutMs } = JSON.parse(body));
       } catch {
-        writeJson(res, 400, { error: 'Invalid JSON body — expected { "tool": "...", "params": { ... } }' });
+        writeJson(res, 400, { error: 'Invalid JSON body — expected { "tool": "...", "params": { ... }, "timeoutMs"?: 30000 }' });
         return;
       }
       if (!tool || typeof tool !== 'string') {
@@ -484,7 +572,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
-        const data = await callTool(tool, params ?? {});
+        const data = await callTool(tool, params ?? {}, timeoutMs);
+        // A fresh backtest of the same settings over new bars resolves any pending decision.
+        if (tool === 'strategy_run_backtest' && data && data.success && data.card) {
+          try { const ids = sweeps.resolvePending(data.card); if (ids.length) data.resolvedDecisions = ids; } catch (e) { console.error('[bridge] decision resolution failed:', e.message); }
+        }
         if (data && typeof data === 'object' && data.success === false) {
           console.error(`[bridge] tool ${tool} returned error:`, data.error ?? '(unknown)');
           const status = CDP_DOWN_RE.test(String(data.error ?? '')) ? 503 : 500;
@@ -500,7 +592,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  writeJson(res, 404, { error: 'Not found. Endpoints: GET /viewer, GET /health, GET /tools, POST /call, POST /agent, POST /agent/cancel, POST /agent/resume, GET /agent/status, GET|DELETE /reports[/:id]' });
+  writeJson(res, 404, { error: 'Not found. Endpoints: GET /viewer, GET /health, GET /tools, POST /call, POST /agent, POST /agent/cancel, POST /agent/resume, GET /agent/status, GET|POST /reports, GET|DELETE /reports/:id, POST /sweep, GET /sweep/status, POST /sweep/cancel, POST /sweep/resume, POST /sweep/apply, GET /sweep/objectives' });
 });
 
 server.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
@@ -509,6 +601,7 @@ server.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
   console.log(`[bridge] Gate Audit viewer: http://${BRIDGE_HOST}:${port}/viewer`);
   console.log(`[bridge] MCP server path: ${MCP_SERVER_PATH}`);
   console.log(`[bridge] agent endpoint: ${ALLOW_AGENT ? `ENABLED (claude -p, default model: ${DEFAULT_MODEL})` : 'disabled (MCP_BRIDGE_ALLOW_AGENT=1 to enable)'}`);
+  console.log(`[bridge] sweep job: enabled (journals in ${path.join(REPORTS_DIR, 'sweeps')}, timeout ${Math.round(SWEEP_TIMEOUT_MS / 60000)} min)`);
   if (!BRIDGE_TOKEN) {
     console.log('[bridge] WARNING: MCP_BRIDGE_TOKEN is not set. Do NOT expose this port through a tunnel without a token.');
   }
