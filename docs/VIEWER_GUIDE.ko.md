@@ -64,8 +64,8 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 | **Audit** | ✅ 동작 | 봉별 판정 스트립 · 게이트 히트맵 · 차단자 히스토그램 · 패턴 봉 표 · 봉 상세 드로어 |
 | **Reports** | ✅ 동작 | 저장된 AI 분석 리포트 목록 / 상세 |
 | **Alerts** | ✅ 동작 | TradingView 알림 목록 · stale 판정 · 켜기/끄기 · 삭제(확인 게이트) |
-| **Backtest** | 🛠 구현됨 (라이브 검증 대기) | 오버라이드 선택 → Run → settle 상태 · verdict · 지표 표(출처 태그) · 검증 블록 · 트레이드 표 → Save as report. [Phase 3 스펙](./phase-plan/phase-3-backtest.md) · [구현 노트](./phase-plan/phase-3-4-implementation-notes.ko.md) · [바이어스 점검](./phase-plan/phase-3.5-bias-checks.md)(미구현, 선택) |
-| **Optimize** | 🛠 구현됨 (라이브 검증 대기) | 프로파일 shortlist에서 파라미터 추가 → 목적함수·샘플러·split date → Run sweep(브리지 잡, 새로고침 후 재접속) → verdict · 베이스라인 대비 equity 오버레이 · 순위 표 · 매트릭스 → Apply(결정 기록). [Phase 4 스펙](./phase-plan/phase-4-optimize.md) · [변경 노트](./phase-plan/phase-3-4-redesign-notes.ko.md) |
+| **Backtest** | ✅ 동작 (2026-09-04 라이브 검증) | 오버라이드 선택 → Run → settle 상태 · verdict · 지표 표(출처 태그) · 검증 블록 · 트레이드 표 → Save as report. [Phase 3 스펙](./phase-plan/phase-3-backtest.md) · [구현 노트](./phase-plan/phase-3-4-implementation-notes.ko.md) · [바이어스 점검](./phase-plan/phase-3.5-bias-checks.md)(미구현, 선택) |
+| **Optimize** | ✅ 동작 (2026-09-04 라이브 검증) | 프로파일 shortlist에서 파라미터 추가 → 목적함수·샘플러·split date → Run sweep(브리지 잡, 새로고침 후 재접속) → verdict · 베이스라인 대비 equity 오버레이 · 순위 표 · 매트릭스 → Apply(결정 기록). [Phase 4 스펙](./phase-plan/phase-4-optimize.md) · [변경 노트](./phase-plan/phase-3-4-redesign-notes.ko.md) |
 
 주소창으로 바로 이동할 수 있습니다: `#audit` · `#reports` · `#reports/<리포트id>` · `#alerts` · `#backtest` · `#optimize`
 
@@ -250,6 +250,8 @@ Bridge token:      mysecret   (paste this into the viewer's token box)
 
 | 날짜 | 변경 내용 |
 |---|---|
+| 2026-09-04 | Backtest · Optimize 탭 라이브 검증 완료(SOLUSD·15 + Supertrend Strategy). 전략 탐색·퍼센트 스케일·입력 검증 등 결함 6건 수정. 상세: [구현 노트 §7](./phase-plan/phase-3-4-implementation-notes.ko.md) |
+| 2026-09-03 | Phase 3 Backtest 탭(RunCard·검증·리포트 저장) · Phase 4 Optimize 탭(파라미터 공간·스윕 잡·순위·Apply) 추가. 사용법: [BACKTEST_OPTIMIZE_GUIDE.md](./BACKTEST_OPTIMIZE_GUIDE.md) |
 | 2026-09-01 | pill 추가: `session snapshot`(창 선택 30m/1h/4h/today) · `price context` · `levels drawn` · `chart screenshot`, 그리고 `✎ why so quiet?`. |
 | 2026-08-31 | 실제 동작 스크린샷 5장 추가 (`docs/images/`). 컨테이너에 Google Chrome 152 설치 후 Playwright로 캡처. |
 | 2026-08-31 | 최초 작성. Phase 1(탭·스마트 프롬프트·Edu 모드), Phase 1.5(pill 토글·컨텍스트 칩·자동입력 pill), Phase 2(send to Claude·리포트 저장/열람·모델 선택) 사용법 수록. |
