@@ -26,7 +26,8 @@ available for PF 3G VP since an `indicator()` has no Strategy Tester. The viewer
 chip carries a report and its original context into a follow-up run; the *verify + Pine prompt*
 preset tiers each recommendation VERIFIED / UNVERIFIABLE and emits one copy-ready block. This
 also shipped [4b](./phase-4-optimize.md#4b-what-if-panel)'s engine, so that panel is now a thin
-client over the tool.
+client over the tool. Session record, in Korean:
+[what was built, measured and deferred](./phase-5-report-followup.ko.md).
 
 **Redesign 2026-09-03** (Phase 3/4 reviewed against the code and against ten open-source
 trading repos): [what changed, how and why](./phase-3-4-redesign-notes.ko.md) ·
